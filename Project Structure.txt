@@ -1,0 +1,15 @@
+crypto-swing-system/
+├── main.py                    # Orchestrator (thin)
+├── config.py                  # Settings
+├── requirements.txt
+├── scanner/
+│   └── scanner.py             # Data fetching + 3-TF filtering
+├── ai/
+│   └── prompts.py             # All AI prompts
+├── risk/
+│   └── risk_manager.py        # ATR, position sizing, compliance
+├── journal/
+│   └── trades.csv             # Backup of Google Sheet
+├── utils/
+│   └── helpers.py             # Reusable functions
+└── README.md
