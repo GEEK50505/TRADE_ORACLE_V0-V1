@@ -1,15 +1,33 @@
-crypto-swing-system/
-├── main.py                    # Orchestrator (thin)
-├── config.py                  # Settings
-├── requirements.txt
-├── scanner/
-│   └── scanner.py             # Data fetching + 3-TF filtering
+trade_oracle/
+│
+├──.env                         # Secure credentials (API keys, Match-Trader login, Supabase variables)
+├── requirements.txt            # Python dependency tree (ccxt, pandas_ta, openai, dimod, supabase)
+├── main.py                     # Asynchronous execution controller
+│
+├── config/
+│   ├── init.py
+│   └── settings.py             # Immutable parameters, watchlist, prop firm rules
+│
+├── data/
+│   ├── init.py
+│   └── scanner.py              # Multi-timeframe OHLCV fetching and technical logic
+│
 ├── ai/
-│   └── prompts.py             # All AI prompts
+│   ├── init.py
+│   └── inference.py            # Async LLM routing and Pydantic schema validation
+│
+├── quantum/
+│   ├── init.py
+│   └── optimizer.py            # BQM/QUBO constructor and D-Wave Ocean SDK stub
+│
+├── execution/
+│   ├── init.py
+│   └── match_trader.py         # REST API bridging for autonomous execution
+│
 ├── risk/
-│   └── risk_manager.py        # ATR, position sizing, compliance
-├── journal/
-│   └── trades.csv             # Backup of Google Sheet
-├── utils/
-│   └── helpers.py             # Reusable functions
-└── README.md
+│   ├── init.py
+│   └── manager.py              # Dynamic position sizing and leverage capping
+│
+└── journal/
+├── init.py
+└── supabase_client.py      # Cloud-native Supabase integration for persistent state tracking
