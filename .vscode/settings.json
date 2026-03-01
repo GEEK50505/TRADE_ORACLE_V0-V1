@@ -33,5 +33,10 @@
   "terminal.integrated.cwd": "${workspaceFolder}",
 
   // automatically activate the selected env when a new terminal is created
-  "python.terminal.activateEnvironment": true
+  "python.terminal.activateEnvironment": true,
+  "python.testing.pytestArgs": [
+    "venv"
+  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
 }

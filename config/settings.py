@@ -44,7 +44,8 @@ MAX_CRYPTO_LEVERAGE = 2.0
 
 # Focus strictly on major liquidity pools and established digital assets to minimize 
 # execution slippage and guarantee optimal match-trader API routing.
-WATCHLIST =
+# Top-10 cryptocurrencies by market cap with highest liquidity on Binance
+WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT', 'ADA/USDT', 'BNB/USDT']
 
 # ==========================================
 # EXTERNAL API ROUTING CREDENTIALS
