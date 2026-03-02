@@ -19,6 +19,13 @@ def test_supabase_persistence():
         print(f"CRITICAL FAILURE: Authentication rejected. Verify.env strings. Error: {e}")
         return
 
+    # Ensure clean database state for repeatable testing
+    try:
+        db.supabase.table('account_state').delete().eq('id', 1).execute()
+        print("Database reset: existing watermark cleared.")
+    except Exception:
+        pass
+
     # Cycle 1: The Cold Start Simulation
     print("\n--- Cycle 1: Account Initialization ---")
     mock_equity_1 = INITIAL_BALANCE  # Baseline mapping to $5000.0
