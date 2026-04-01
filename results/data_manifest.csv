@@ -1,0 +1,13 @@
+timeframe,file,file_size_bytes,symbol,rows,start,end,sma50_nans,sma50_nans_pct,ema20_nans,ema20_nans_pct,rel_weak_14_nans,rel_weak_14_nans_pct,high30_nans,high30_nans_pct,low30_nans,low30_nans_pct,covers_36_months
+1H,data/market_data_1H.parquet,6836488,BTC/USDT,26283,2023-04-01T06:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1H,data/market_data_1H.parquet,6836488,ETH/USDT,26283,2023-04-01T06:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1H,data/market_data_1H.parquet,6836488,LINK/USDT,26283,2023-04-01T06:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1H,data/market_data_1H.parquet,6836488,SOL/USDT,26283,2023-04-01T06:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+4H,data/market_data_4H.parquet,1777050,BTC/USDT,6571,2023-04-01T08:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+4H,data/market_data_4H.parquet,1777050,ETH/USDT,6571,2023-04-01T08:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+4H,data/market_data_4H.parquet,1777050,LINK/USDT,6571,2023-04-01T08:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+4H,data/market_data_4H.parquet,1777050,SOL/USDT,6571,2023-04-01T08:00:00,2026-03-31T08:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1D,data/market_data_1D.parquet,314388,BTC/USDT,1100,2023-03-28T00:00:00,2026-03-31T00:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1D,data/market_data_1D.parquet,314388,ETH/USDT,1100,2023-03-28T00:00:00,2026-03-31T00:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1D,data/market_data_1D.parquet,314388,LINK/USDT,1100,2023-03-28T00:00:00,2026-03-31T00:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
+1D,data/market_data_1D.parquet,314388,SOL/USDT,1100,2023-03-28T00:00:00,2026-03-31T00:00:00,0,0.0,0,0.0,0,0.0,0,0.0,0,0.0,True
