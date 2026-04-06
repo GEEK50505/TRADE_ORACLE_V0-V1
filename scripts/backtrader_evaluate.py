@@ -245,6 +245,40 @@ class MarketDataCatalog:
         daily_only_count = len(WATCHLIST) - intraday_count
         return {"intraday_symbols": intraday_count, "daily_fallback_symbols": daily_only_count}
 
+    def describe_symbol_coverage(self, prefer_intraday: bool = True) -> pd.DataFrame:
+        """Return one raw coverage row per watchlist symbol."""
+        rows: List[Dict[str, object]] = []
+        for symbol in WATCHLIST:
+            daily_frame = self.daily_frames[symbol]
+            intraday_frame = self.intraday_frames.get(symbol)
+
+            daily_start = pd.Timestamp(daily_frame.index[0])
+            daily_end = pd.Timestamp(daily_frame.index[-1])
+            intraday_start = pd.Timestamp(intraday_frame.index[0]) if intraday_frame is not None else pd.NaT
+            intraday_end = pd.Timestamp(intraday_frame.index[-1]) if intraday_frame is not None else pd.NaT
+
+            data_mode = "4H->1D" if prefer_intraday and intraday_frame is not None else "1D"
+            chosen_start = intraday_start if data_mode == "4H->1D" else daily_start
+            chosen_end = intraday_end if data_mode == "4H->1D" else daily_end
+
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "daily_start": daily_start,
+                    "daily_end": daily_end,
+                    "intraday_start": intraday_start,
+                    "intraday_end": intraday_end,
+                    "has_intraday": bool(intraday_frame is not None),
+                    "chosen_exec_mode": data_mode,
+                    "chosen_exec_start": chosen_start,
+                    "chosen_exec_end": chosen_end,
+                    "raw_daily_span_days": int((daily_end - daily_start).days),
+                    "raw_exec_span_days": int((chosen_end - chosen_start).days),
+                }
+            )
+
+        return pd.DataFrame(rows)
+
 
 class MavenCandidateStrategy(bt.Strategy):
     """

@@ -1,0 +1,251 @@
+# Backtrader final portfolio full report
+
+This report consolidates the frictionless reference, baseline, and stress reruns for the exact 5-pair TRADE_ORACLE deployment portfolio.
+
+## Scenario Metrics
+
+| friction_preset | active_pairs | watchlist_size | total_trades | closed_positions | win_rate | expectancy | total_profit | total_return | ending_equity | peak_equity | max_dd_dollars | max_dd_pct | breached | consistency_score | overall_survival | max_concurrent_observed | same_symbol_opposite_conflicts | same_pair_duplicate_blocks | stacked_same_side_entries | internal_pair_conflicts | entry_rejections | partial_fill_events | extra_latency_events | long_total_trades | short_total_trades | long_closed_positions | short_closed_positions | long_total_profit | short_total_profit | backtest_start | backtest_end | true_months_window | dynamic_symbol_count | activated_symbol_count | winning_positions | losing_positions | breakeven_positions | position_win_rate | avg_position_pnl | avg_winner_pnl | avg_loser_pnl | profit_factor | avg_holding_days | median_holding_days | best_position_pnl | worst_position_pnl | max_consecutive_position_wins | max_consecutive_position_losses | avg_support_pair_count | cagr | daily_sharpe | daily_sortino | calmar | months_traded | profitable_months | losing_months | monthly_win_rate | best_month_return_pct | worst_month_return_pct | stacking_profit_delta_vs_netted | friction_profit_delta_vs_reference |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| frictionless_reference | 5 | 10 | 66 | 47 | 0.4242 | -1.0949 | -72.2650 | -0.0145 | 4927.7350 | 5116.0137 | 202.4447 | 3.9571 | True | 999.0000 | False | 4 | 10 | 99 | 30 | 0 | 0 | 0 | 0 | 34 | 32 | 23 | 24 | 11.6667 | -83.9317 | 2023-06-16 00:00 | 2026-03-31 08:00 | 34 | 1 | 10 | 19 | 28 | 0 | 0.4043 | -1.5376 | 12.1930 | -10.8547 | 0.7622 | 11.8227 | 8.0000 | 18.3333 | -15.9829 | 9 | 12 | 1.0000 | -0.0052 | -0.2853 | -0.1463 | -0.1314 | 33 | 5 | 3 | 0.1515 | 1.5438 | -1.4124 | -427.2888 | 0.0000 |
+| baseline | 5 | 10 | 68 | 48 | 0.4265 | -1.0944 | -74.4190 | -0.0149 | 4925.5810 | 5113.7532 | 200.8200 | 3.9271 | True | 999.0000 | False | 4 | 10 | 107 | 30 | 0 | 1 | 2 | 40 | 36 | 32 | 24 | 24 | 12.5996 | -87.0186 | 2023-06-16 00:00 | 2026-03-31 08:00 | 34 | 1 | 10 | 20 | 28 | 0 | 0.4167 | -1.5504 | 11.3201 | -10.7436 | 0.7526 | 11.4514 | 6.3333 | 17.6891 | -15.9042 | 10 | 12 | 1.0000 | -0.0054 | -0.3037 | -0.1547 | -0.1364 | 33 | 5 | 3 | 0.1515 | 1.4860 | -1.4498 | -429.4428 | -2.1540 |
+| stress | 5 | 10 | 16 | 16 | 0.0000 | -9.6665 | -154.6635 | -0.0309 | 4845.3365 | 5000.0000 | 162.2155 | 3.2443 | True | 999.0000 | False | 4 | 0 | 12 | 11 | 0 | 1 | 2 | 7 | 8 | 8 | 8 | 8 | -70.1698 | -84.4938 | 2023-06-16 00:00 | 2026-03-31 08:00 | 34 | 1 | 10 | 0 | 16 | 0 | 0.0000 | -9.6665 | 0.0000 | -9.6665 | 0.0000 | 2.8750 | 2.0000 | -4.5423 | -11.1529 | 0 | 16 | 1.0000 | -0.0112 | -1.2155 | -0.1828 | -0.3450 | 33 | 0 | 1 | 0.0000 | 0.0000 | -1.5129 | -509.6873 | -82.3985 |
+
+## Coverage By Scenario
+
+| symbol | daily_start | daily_end | intraday_start | intraday_end | has_intraday | chosen_exec_mode | chosen_exec_start | chosen_exec_end | raw_daily_span_days | raw_exec_span_days | activation_ts | dynamic_added | activated | friction_preset |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| BTC/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| ETH/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| SOL/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| XRP/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| DOGE/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| AVAX/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| LINK/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| TON/USDT | 2024-08-08 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2024-08-08 00:00:00 | 2026-03-31 00:00:00 | 600 | 600 | 2024-10-22 00:00:00 | True | True | frictionless_reference |
+| ADA/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| BNB/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | frictionless_reference |
+| BTC/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | baseline |
+| ETH/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | baseline |
+| SOL/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | baseline |
+| XRP/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | baseline |
+| DOGE/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | baseline |
+| AVAX/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | baseline |
+| LINK/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | baseline |
+| TON/USDT | 2024-08-08 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2024-08-08 00:00:00 | 2026-03-31 00:00:00 | 600 | 600 | 2024-10-22 00:00:00 | True | True | baseline |
+| ADA/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | baseline |
+| BNB/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | baseline |
+| BTC/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | stress |
+| ETH/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | stress |
+| SOL/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | stress |
+| XRP/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | stress |
+| DOGE/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | stress |
+| AVAX/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | stress |
+| LINK/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | True | 4H->1D | 2023-04-01 08:00:00 | 2026-03-31 08:00:00 | 1094 | 1095 | 2023-06-16 00:00:00 | False | True | stress |
+| TON/USDT | 2024-08-08 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2024-08-08 00:00:00 | 2026-03-31 00:00:00 | 600 | 600 | 2024-10-22 00:00:00 | True | True | stress |
+| ADA/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | stress |
+| BNB/USDT | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | NaT | NaT | False | 1D | 2023-04-02 00:00:00 | 2026-03-31 00:00:00 | 1094 | 1094 | 2023-06-16 00:00:00 | False | True | stress |
+
+## Pair Stats By Scenario
+
+| source_pair_id | positions | winning_positions | total_profit | avg_position_pnl | avg_support_pair_count | position_win_rate | shortlist_priority | shortlist_role | long_param_id | short_param_id | friction_preset |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 8 | 3 | -12.6496 | -1.5812 | 1.0000 | 0.3750 | 4 | pair_diversifier | cand_002_AVAX_USDT__4h_ema15_dist0.000 | short_cand_088_ETH_USDT__4h_ema15_dist0.000 | frictionless_reference |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 8 | 3 | -12.6496 | -1.5812 | 1.0000 | 0.3750 | 3 | throughput_variant | cand_002_AVAX_USDT__4h_ema15_dist0.008 | short_cand_088_ETH_USDT__4h_ema15_dist0.000 | frictionless_reference |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 14 | 6 | -22.6496 | -1.6178 | 1.0000 | 0.4286 | 2 | secondary | cand_002_AVAX_USDT__4h_ema15_dist0.000 | short_cand_088_ETH_USDT__4h_ema20_dist0.000 | frictionless_reference |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 17 | 7 | -24.3163 | -1.4304 | 1.0000 | 0.4118 | 1 | primary | cand_002_AVAX_USDT__4h_ema15_dist0.008 | short_cand_088_ETH_USDT__4h_ema20_dist0.000 | frictionless_reference |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 17 | 8 | -9.6971 | -0.5704 | 1.0000 | 0.4706 | 1 | primary | cand_002_AVAX_USDT__4h_ema15_dist0.008 | short_cand_088_ETH_USDT__4h_ema20_dist0.000 | baseline |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 8 | 3 | -14.3713 | -1.7964 | 1.0000 | 0.3750 | 4 | pair_diversifier | cand_002_AVAX_USDT__4h_ema15_dist0.000 | short_cand_088_ETH_USDT__4h_ema15_dist0.000 | baseline |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 12 | 5 | -22.3718 | -1.8643 | 1.0000 | 0.4167 | 2 | secondary | cand_002_AVAX_USDT__4h_ema15_dist0.000 | short_cand_088_ETH_USDT__4h_ema20_dist0.000 | baseline |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 11 | 4 | -27.9788 | -2.5435 | 1.0000 | 0.3636 | 3 | throughput_variant | cand_002_AVAX_USDT__4h_ema15_dist0.008 | short_cand_088_ETH_USDT__4h_ema15_dist0.000 | baseline |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 4 | 0 | -35.6952 | -8.9238 | 1.0000 | 0.0000 | 4 | pair_diversifier | cand_002_AVAX_USDT__4h_ema15_dist0.000 | short_cand_088_ETH_USDT__4h_ema15_dist0.000 | stress |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 4 | 0 | -36.7804 | -9.1951 | 1.0000 | 0.0000 | 2 | secondary | cand_002_AVAX_USDT__4h_ema15_dist0.000 | short_cand_088_ETH_USDT__4h_ema20_dist0.000 | stress |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 4 | 0 | -41.0351 | -10.2588 | 1.0000 | 0.0000 | 3 | throughput_variant | cand_002_AVAX_USDT__4h_ema15_dist0.008 | short_cand_088_ETH_USDT__4h_ema15_dist0.000 | stress |
+| combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 4 | 0 | -41.1529 | -10.2882 | 1.0000 | 0.0000 | 1 | primary | cand_002_AVAX_USDT__4h_ema15_dist0.008 | short_cand_088_ETH_USDT__4h_ema20_dist0.000 | stress |
+
+## Symbol Stats By Scenario
+
+| symbol | positions | winning_positions | total_profit | avg_position_pnl | position_win_rate | friction_preset |
+| --- | --- | --- | --- | --- | --- | --- |
+| BNB/USDT | 6 | 6 | 86.6667 | 14.4444 | 1.0000 | frictionless_reference |
+| AVAX/USDT | 11 | 6 | 36.6667 | 3.3333 | 0.5455 | frictionless_reference |
+| ETH/USDT | 3 | 1 | -1.6667 | -0.5556 | 0.3333 | frictionless_reference |
+| ADA/USDT | 1 | 0 | -10.0000 | -10.0000 | 0.0000 | frictionless_reference |
+| LINK/USDT | 8 | 4 | -13.3333 | -1.6667 | 0.5000 | frictionless_reference |
+| BTC/USDT | 2 | 0 | -20.0000 | -10.0000 | 0.0000 | frictionless_reference |
+| XRP/USDT | 4 | 0 | -63.9317 | -15.9829 | 0.0000 | frictionless_reference |
+| DOGE/USDT | 12 | 2 | -86.6667 | -7.2222 | 0.1667 | frictionless_reference |
+| BNB/USDT | 6 | 6 | 81.6892 | 13.6149 | 1.0000 | baseline |
+| AVAX/USDT | 11 | 6 | 35.3074 | 3.2098 | 0.5455 | baseline |
+| ETH/USDT | 3 | 1 | -2.5619 | -0.8540 | 0.3333 | baseline |
+| ADA/USDT | 1 | 0 | -10.0000 | -10.0000 | 0.0000 | baseline |
+| LINK/USDT | 8 | 4 | -14.4275 | -1.8034 | 0.5000 | baseline |
+| BTC/USDT | 2 | 0 | -20.0000 | -10.0000 | 0.0000 | baseline |
+| XRP/USDT | 5 | 1 | -57.5691 | -11.5138 | 0.2000 | baseline |
+| DOGE/USDT | 12 | 2 | -86.8571 | -7.2381 | 0.1667 | baseline |
+| LINK/USDT | 2 | 0 | -20.0000 | -10.0000 | 0.0000 | stress |
+| AVAX/USDT | 6 | 0 | -54.5423 | -9.0904 | 0.0000 | stress |
+| DOGE/USDT | 8 | 0 | -80.1213 | -10.0152 | 0.0000 | stress |
+
+## Monthly Returns By Scenario
+
+| month | monthly_return_pct | month_end_equity | friction_preset |
+| --- | --- | --- | --- |
+| 2023-07 | -1.3951 | 4878.0269 | frictionless_reference |
+| 2023-08 | 1.5438 | 4953.3333 | frictionless_reference |
+| 2023-09 | 0.1813 | 4962.3140 | frictionless_reference |
+| 2023-10 | 1.2038 | 5022.0521 | frictionless_reference |
+| 2023-11 | 0.4788 | 5046.0963 | frictionless_reference |
+| 2023-12 | 0.0408 | 5048.1530 | frictionless_reference |
+| 2024-01 | -0.9869 | 4998.3333 | frictionless_reference |
+| 2024-02 | -1.4124 | 4927.7350 | frictionless_reference |
+| 2024-03 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-04 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-05 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-06 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-07 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-08 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-09 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-10 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-11 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2024-12 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-01 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-02 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-03 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-04 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-05 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-06 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-07 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-08 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-09 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-10 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-11 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2025-12 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2026-01 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2026-02 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2026-03 | 0.0000 | 4927.7350 | frictionless_reference |
+| 2023-07 | -1.4498 | 4878.3398 | baseline |
+| 2023-08 | 1.4860 | 4950.8331 | baseline |
+| 2023-09 | 0.1532 | 4958.4202 | baseline |
+| 2023-10 | 1.2838 | 5022.0752 | baseline |
+| 2023-11 | 0.4553 | 5044.9429 | baseline |
+| 2023-12 | 0.0247 | 5046.1902 | baseline |
+| 2024-01 | -0.9864 | 4996.4129 | baseline |
+| 2024-02 | -1.4177 | 4925.5810 | baseline |
+| 2024-03 | 0.0000 | 4925.5810 | baseline |
+| 2024-04 | 0.0000 | 4925.5810 | baseline |
+| 2024-05 | 0.0000 | 4925.5810 | baseline |
+| 2024-06 | 0.0000 | 4925.5810 | baseline |
+| 2024-07 | 0.0000 | 4925.5810 | baseline |
+| 2024-08 | 0.0000 | 4925.5810 | baseline |
+| 2024-09 | 0.0000 | 4925.5810 | baseline |
+| 2024-10 | 0.0000 | 4925.5810 | baseline |
+| 2024-11 | 0.0000 | 4925.5810 | baseline |
+| 2024-12 | 0.0000 | 4925.5810 | baseline |
+| 2025-01 | 0.0000 | 4925.5810 | baseline |
+| 2025-02 | 0.0000 | 4925.5810 | baseline |
+| 2025-03 | 0.0000 | 4925.5810 | baseline |
+| 2025-04 | 0.0000 | 4925.5810 | baseline |
+| 2025-05 | 0.0000 | 4925.5810 | baseline |
+| 2025-06 | 0.0000 | 4925.5810 | baseline |
+| 2025-07 | 0.0000 | 4925.5810 | baseline |
+| 2025-08 | 0.0000 | 4925.5810 | baseline |
+| 2025-09 | 0.0000 | 4925.5810 | baseline |
+| 2025-10 | 0.0000 | 4925.5810 | baseline |
+| 2025-11 | 0.0000 | 4925.5810 | baseline |
+| 2025-12 | 0.0000 | 4925.5810 | baseline |
+| 2026-01 | 0.0000 | 4925.5810 | baseline |
+| 2026-02 | 0.0000 | 4925.5810 | baseline |
+| 2026-03 | 0.0000 | 4925.5810 | baseline |
+| 2023-07 | -1.5129 | 4845.3365 | stress |
+| 2023-08 | 0.0000 | 4845.3365 | stress |
+| 2023-09 | 0.0000 | 4845.3365 | stress |
+| 2023-10 | 0.0000 | 4845.3365 | stress |
+| 2023-11 | 0.0000 | 4845.3365 | stress |
+| 2023-12 | 0.0000 | 4845.3365 | stress |
+| 2024-01 | 0.0000 | 4845.3365 | stress |
+| 2024-02 | 0.0000 | 4845.3365 | stress |
+| 2024-03 | 0.0000 | 4845.3365 | stress |
+| 2024-04 | 0.0000 | 4845.3365 | stress |
+| 2024-05 | 0.0000 | 4845.3365 | stress |
+| 2024-06 | 0.0000 | 4845.3365 | stress |
+| 2024-07 | 0.0000 | 4845.3365 | stress |
+| 2024-08 | 0.0000 | 4845.3365 | stress |
+| 2024-09 | 0.0000 | 4845.3365 | stress |
+| 2024-10 | 0.0000 | 4845.3365 | stress |
+| 2024-11 | 0.0000 | 4845.3365 | stress |
+| 2024-12 | 0.0000 | 4845.3365 | stress |
+| 2025-01 | 0.0000 | 4845.3365 | stress |
+| 2025-02 | 0.0000 | 4845.3365 | stress |
+| 2025-03 | 0.0000 | 4845.3365 | stress |
+| 2025-04 | 0.0000 | 4845.3365 | stress |
+| 2025-05 | 0.0000 | 4845.3365 | stress |
+| 2025-06 | 0.0000 | 4845.3365 | stress |
+| 2025-07 | 0.0000 | 4845.3365 | stress |
+| 2025-08 | 0.0000 | 4845.3365 | stress |
+| 2025-09 | 0.0000 | 4845.3365 | stress |
+| 2025-10 | 0.0000 | 4845.3365 | stress |
+| 2025-11 | 0.0000 | 4845.3365 | stress |
+| 2025-12 | 0.0000 | 4845.3365 | stress |
+| 2026-01 | 0.0000 | 4845.3365 | stress |
+| 2026-02 | 0.0000 | 4845.3365 | stress |
+| 2026-03 | 0.0000 | 4845.3365 | stress |
+
+## Top Positions Across Scenarios
+
+| trade_id | source_pair_id | support_pair_ids | support_pair_count | support_pair_expectancy_mean | side | symbol | signal_dt | entry_dt | exit_dt | entry_ref_price | entry_fill_price | exit_ref_price | exit_fill_price | initial_size | initial_atr | initial_stop_price | tp1_price | tp2_price | gross_price_pnl | fee_paid_entry | fee_paid_exit | spread_cost | slippage_cost | realized_pnl | fragment_count | holding_days | final_reason | winning_position | partial_fill_ratio | latency_bars | rejected_entry_flag | friction_preset |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 13 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.3000 | 207.1883 | 207.1883 | 0.7047 | 9.4605 | 254.4907 | 221.3790 | 207.1883 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 15 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.3000 | 207.1883 | 207.1883 | 0.7047 | 9.4605 | 254.4907 | 221.3790 | 207.1883 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 14 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.3000 | 207.1883 | 207.1883 | 0.7047 | 9.4605 | 254.4907 | 221.3790 | 207.1883 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 24 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6000 | 12.5978 | 12.5978 | 11.6795 | 0.5708 | 9.7438 | 11.7416 | 12.5978 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 25 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6000 | 12.5978 | 12.5978 | 11.6795 | 0.5708 | 9.7438 | 11.7416 | 12.5978 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 23 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | ETH/USDT | 2023-10-22 00:00:00 | 2023-10-22 04:00:00 | 2023-10-23 20:00:00 | 1629.7400 | 1629.7400 | 1788.5076 | 1788.5076 | 0.1470 | 45.3622 | 1561.6967 | 1720.4644 | 1788.5076 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 1.6667 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 16 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.3000 | 207.1883 | 207.1883 | 0.7047 | 9.4605 | 254.4907 | 221.3790 | 207.1883 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 26 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6000 | 12.5978 | 12.5978 | 11.6795 | 0.5708 | 9.7438 | 11.7416 | 12.5978 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 27 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6000 | 12.5978 | 12.5978 | 11.6795 | 0.5708 | 9.7438 | 11.7416 | 12.5978 | 18.3333 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 18.3333 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | frictionless_reference |
+| 26 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6074 | 12.6052 | 12.5964 | 11.4139 | 0.5708 | 9.7512 | 11.7490 | 12.6052 | 17.8191 | 0.0605 | 0.0694 | 0.1040 | 0.0780 | 17.6891 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 25 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6074 | 12.6052 | 12.5964 | 11.4139 | 0.5708 | 9.7512 | 11.7490 | 12.6052 | 17.8191 | 0.0605 | 0.0694 | 0.1040 | 0.0780 | 17.6891 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 28 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6074 | 12.6052 | 12.5964 | 11.4139 | 0.5708 | 9.7512 | 11.7490 | 12.6052 | 17.8191 | 0.0605 | 0.0694 | 0.1040 | 0.0780 | 17.6891 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 27 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | long | AVAX/USDT | 2023-10-27 00:00:00 | 2023-10-28 00:00:00 | 2023-11-05 00:00:00 | 10.6000 | 10.6074 | 12.6052 | 12.5964 | 11.4139 | 0.5708 | 9.7512 | 11.7490 | 12.6052 | 17.8191 | 0.0605 | 0.0694 | 0.1040 | 0.0780 | 17.6891 | 2 | 8.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 14 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.1318 | 207.0201 | 207.1650 | 0.6806 | 9.4605 | 254.3225 | 221.2108 | 207.0201 | 17.6053 | 0.0817 | 0.0729 | 0.1237 | 0.0928 | 17.4507 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 13 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.1318 | 207.0201 | 207.1650 | 0.6806 | 9.4605 | 254.3225 | 221.2108 | 207.0201 | 17.6053 | 0.0817 | 0.0729 | 0.1237 | 0.0928 | 17.4507 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 16 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.1318 | 207.0201 | 207.1650 | 0.6806 | 9.4605 | 254.3225 | 221.2108 | 207.0201 | 17.6053 | 0.0817 | 0.0729 | 0.1237 | 0.0928 | 17.4507 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 15 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | BNB/USDT | 2023-07-18 00:00:00 | 2023-07-19 00:00:00 | 2023-08-21 00:00:00 | 240.3000 | 240.1318 | 207.0201 | 207.1650 | 0.6806 | 9.4605 | 254.3225 | 221.2108 | 207.0201 | 17.6053 | 0.0817 | 0.0729 | 0.1237 | 0.0928 | 17.4507 | 2 | 33.0000 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 23 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | ETH/USDT | 2023-10-22 00:00:00 | 2023-10-22 04:00:00 | 2023-10-23 20:00:00 | 1629.7400 | 1630.2289 | 1788.9966 | 1788.4599 | 0.1423 | 45.3622 | 1562.1857 | 1720.9533 | 1788.9966 | 17.6790 | 0.1160 | 0.1248 | 0.0963 | 0.0482 | 17.4381 | 2 | 1.6667 | tp2_final | True | 1.0000 | 0 | False | baseline |
+| 20 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | DOGE/USDT | 2023-09-06 00:00:00 | 2023-09-07 00:00:00 | 2023-10-23 00:00:00 | 0.0636 | 0.0636 | 0.0636 | 0.0636 | 2437.6245 | 0.0027 | 0.0677 | 0.0582 | 0.0541 | 6.6667 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 6.6667 | 2 | 46.0000 | stop_loss | True | 1.0000 | 0 | False | frictionless_reference |
+| 18 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | DOGE/USDT | 2023-09-06 00:00:00 | 2023-09-07 00:00:00 | 2023-10-23 00:00:00 | 0.0636 | 0.0636 | 0.0636 | 0.0636 | 2437.6245 | 0.0027 | 0.0677 | 0.0582 | 0.0541 | 6.6667 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 6.6667 | 2 | 46.0000 | stop_loss | True | 1.0000 | 0 | False | frictionless_reference |
+
+## Recent Trade Events Across Scenarios
+
+| trade_id | event_kind | source_pair_id | support_pair_ids | support_pair_count | support_pair_expectancy_mean | side | symbol | signal_dt | entry_dt | exit_dt | entry_ref_price | entry_fill_price | exit_ref_price | exit_fill_price | size | gross_price_pnl | entry_fee_allocated | exit_fee | spread_cost | slippage_cost | pnl | reason | latency_bars | partial_fill_ratio | rejected_entry_flag | friction_preset |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 44.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5342 | nan | nan | 307.9561 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 45.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5342 | nan | nan | 307.9561 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 46.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5342 | nan | nan | 307.9561 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 47.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5342 | nan | nan | 307.9561 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 45.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5338 | nan | nan | 297.7182 | 0.0000 | 0.0795 | 0.0000 | 0.0636 | 0.0477 | -0.0795 | entry_filled | 0 | 1.0000 | False | baseline |
+| 46.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5338 | nan | nan | 297.7182 | 0.0000 | 0.0795 | 0.0000 | 0.0636 | 0.0477 | -0.0795 | entry_filled | 0 | 1.0000 | False | baseline |
+| 47.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5338 | nan | nan | 297.7182 | 0.0000 | 0.0795 | 0.0000 | 0.0636 | 0.0477 | -0.0795 | entry_filled | 0 | 1.0000 | False | baseline |
+| 48.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | NaT | 0.5342 | 0.5338 | nan | nan | 297.7182 | 0.0000 | 0.0795 | 0.0000 | 0.0636 | 0.0477 | -0.0795 | entry_filled | 0 | 1.0000 | False | baseline |
+| 44.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5342 | 0.5861 | 0.5861 | 307.9561 | -15.9829 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -15.9829 | account_breach_liquidation | 0 | 1.0000 | False | frictionless_reference |
+| 45.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5342 | 0.5861 | 0.5861 | 307.9561 | -15.9829 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -15.9829 | account_breach_liquidation | 0 | 1.0000 | False | frictionless_reference |
+| 46.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5342 | 0.5861 | 0.5861 | 307.9561 | -15.9829 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -15.9829 | account_breach_liquidation | 0 | 1.0000 | False | frictionless_reference |
+| 47.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5342 | 0.5861 | 0.5861 | 307.9561 | -15.9829 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -15.9829 | account_breach_liquidation | 0 | 1.0000 | False | frictionless_reference |
+| 45.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5338 | 0.5861 | 0.5867 | 297.7182 | -15.7374 | 0.0795 | 0.0873 | 0.0698 | 0.1047 | -15.9042 | account_breach_liquidation | 0 | 1.0000 | False | baseline |
+| 46.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5338 | 0.5861 | 0.5867 | 297.7182 | -15.7374 | 0.0795 | 0.0873 | 0.0698 | 0.1047 | -15.9042 | account_breach_liquidation | 0 | 1.0000 | False | baseline |
+| 47.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5338 | 0.5861 | 0.5867 | 297.7182 | -15.7374 | 0.0795 | 0.0873 | 0.0698 | 0.1047 | -15.9042 | account_breach_liquidation | 0 | 1.0000 | False | baseline |
+| 48.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.6720 | short | XRP/USDT | 2024-02-23 00:00:00 | 2024-02-24 00:00:00 | 2024-02-27 00:00:00 | 0.5342 | 0.5338 | 0.5861 | 0.5867 | 297.7182 | -15.7374 | 0.0795 | 0.0873 | 0.0698 | 0.1047 | -15.9042 | account_breach_liquidation | 0 | 1.0000 | False | baseline |
+| 40.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 35.9600 | 35.9600 | nan | nan | 2.4506 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 41.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | DOGE/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 0.0787 | 0.0787 | nan | nan | 1760.8450 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 42.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 35.9600 | 35.9600 | nan | nan | 2.4506 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 43.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | DOGE/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 0.0787 | 0.0787 | nan | nan | 1760.8450 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -0.0000 | entry_filled | 0 | 1.0000 | False | frictionless_reference |
+| 41.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 35.9600 | 35.9852 | nan | nan | 2.4117 | 0.0000 | 0.0434 | 0.0000 | 0.0347 | 0.0260 | -0.0434 | entry_filled | 0 | 1.0000 | False | baseline |
+| 42.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | DOGE/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 0.0787 | 0.0787 | nan | nan | 1696.1848 | 0.0000 | 0.0667 | 0.0000 | 0.0801 | 0.0668 | -0.0667 | entry_filled | 0 | 1.0000 | False | baseline |
+| 43.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 35.9600 | 35.9852 | nan | nan | 2.4117 | 0.0000 | 0.0434 | 0.0000 | 0.0347 | 0.0260 | -0.0434 | entry_filled | 0 | 1.0000 | False | baseline |
+| 44.0000 | entry_filled | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema15_dist0.000 | 1 | 2.7795 | short | DOGE/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | NaT | 0.0787 | 0.0787 | nan | nan | 1696.1848 | 0.0000 | 0.0667 | 0.0000 | 0.0801 | 0.0668 | -0.0667 | entry_filled | 0 | 1.0000 | False | baseline |
+| 40.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | 2024-02-13 00:00:00 | 35.9600 | 35.9600 | 41.4009 | 41.4009 | 1.2253 | 6.6667 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 6.6667 | tp1_scale_out | 0 | 1.0000 | False | frictionless_reference |
+| 42.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | 2024-02-13 00:00:00 | 35.9600 | 35.9600 | 41.4009 | 41.4009 | 1.2253 | 6.6667 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 6.6667 | tp1_scale_out | 0 | 1.0000 | False | frictionless_reference |
+| 41.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | short | DOGE/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | 2024-02-14 00:00:00 | 0.0787 | 0.0787 | 0.0844 | 0.0844 | 1760.8450 | -10.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -10.0000 | stop_loss | 0 | 1.0000 | False | frictionless_reference |
+| 43.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | short | DOGE/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | 2024-02-14 00:00:00 | 0.0787 | 0.0787 | 0.0844 | 0.0844 | 1760.8450 | -10.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | -10.0000 | stop_loss | 0 | 1.0000 | False | frictionless_reference |
+| 40.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.008__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.8093 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | 2024-02-21 00:00:00 | 35.9600 | 35.9600 | 35.9600 | 35.9600 | 1.2253 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | stop_loss | 0 | 1.0000 | False | frictionless_reference |
+| 42.0000 | exit_fragment | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | combined__cand_002_AVAX_USDT__4h_ema15_dist0.000__short_cand_088_ETH_USDT__4h_ema20_dist0.000 | 1 | 2.7101 | long | AVAX/USDT | 2024-02-03 00:00:00 | 2024-02-04 00:00:00 | 2024-02-21 00:00:00 | 35.9600 | 35.9600 | 35.9600 | 35.9600 | 1.2253 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | stop_loss | 0 | 1.0000 | False | frictionless_reference |
