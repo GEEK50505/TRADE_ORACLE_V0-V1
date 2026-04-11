@@ -1,0 +1,560 @@
+{
+  "name": "TRADE_ORACLE 4H Master Orchestrator Platform Skeleton",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 0 */4 * * *"
+            }
+          ]
+        }
+      },
+      "id": "trg-schedule",
+      "name": "TRG Schedule Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const now = new Date();\nreturn [{json:{run_id:`trade_oracle_${now.getTime()}`,scheduled_at_utc:now.toISOString(),platform_base_url:$env.TRADE_ORACLE_PLATFORM_BASE_URL||'http://127.0.0.1:8000',platform_api_key:$env.TRADE_ORACLE_PLATFORM_API_KEY||'',watchlist:['BTC/USDT','ETH/USDT','SOL/USDT','XRP/USDT','DOGE/USDT','AVAX/USDT'],auto_approve:false,enable_live_llm:false,account_state:{current_balance:Number($env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number($env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number($env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0)}}}];"
+      },
+      "id": "ctx-runtime",
+      "name": "CTX Resolve Runtime Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.platform_base_url + '/system/health' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "precheck-health",
+      "name": "PRECHECK Platform Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;return [{json:{...item,super_brain_request:{watchlist:item.watchlist,account_state:item.account_state,auto_approve:item.auto_approve,enable_live_llm:item.enable_live_llm}}}];"
+      },
+      "id": "brain-build-request",
+      "name": "BRAIN Build Run Once Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.platform_base_url + '/superbrain/run-once' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.super_brain_request }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "brain-run",
+      "name": "BRAIN Run Super Brain",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const response=$input.first().json;const result=response.result||{};const evaluations=result.evaluations||[];const candidates=result.candidates||[];const pending=evaluations.filter((e)=>e.status==='pending_review');const topCandidate=candidates[0]||null;return [{json:{response,evaluations,candidates,pending_review_count:pending.length,first_pending_review:pending[0]||null,top_candidate:topCandidate,top_candidate_ready:Boolean(topCandidate&&topCandidate.execute_trade===true&&topCandidate.execution_status==='approved')}}];"
+      },
+      "id": "brain-normalize",
+      "name": "BRAIN Normalize Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pending_review_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "larger"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-pending-review",
+      "name": "BRAIN Pending Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const review=$input.first().json.first_pending_review;return [{json:{event_type:'pending_review',thread_id:review?.thread_id||'',review_context:review?.review_context||{},candidate:review?.candidate||null,operator_message:review?`OpenClaw review required for ${review.thread_id}`:'OpenClaw review required'}}];"
+      },
+      "id": "alert-review",
+      "name": "ALERT Prepare OpenClaw Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.top_candidate_ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-approved-candidate",
+      "name": "EXEC Candidate Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2040,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const candidate=$input.first().json.top_candidate;return [{json:{candidate,risk_request:{current_balance:Number($env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number($env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number($env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0),entry_price:Number(candidate?.position_sizing?.entry_price||0),atr:Number(candidate?.position_sizing?.atr||candidate?.atr||0),direction:candidate?.direction||candidate?.final_decision||'BUY'}}}];"
+      },
+      "id": "risk-build",
+      "name": "RISK Build Recheck Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TRADE_ORACLE_PLATFORM_BASE_URL || 'http://127.0.0.1:8000') + '/services/ops/ops/risk/evaluate' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.risk_request }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "risk-call",
+      "name": "RISK Optional Recheck",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.result.can_open_new_trade }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-risk-passed",
+      "name": "RISK Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2820,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const candidate=$('RISK Build Recheck Request').first().json.candidate;const risk=$input.first().json.result||{};const size=risk.position_size||candidate?.position_sizing||{};return [{json:{execution_request:{broker_id:$env.MATCH_TRADER_BROKER_ID||'',email:$env.MATCH_TRADER_USER||'',password:$env.MATCH_TRADER_PASS||'',base_url:$env.MATCH_TRADER_BASE_URL||'https://mtr-api.match-trader.com',system_uuid:$env.MATCH_TRADER_SYSTEM_UUID||'',symbol:candidate?.symbol||'',direction:candidate?.direction||candidate?.final_decision||'BUY',size:Number(size.tokens||0),limit_price:Number(size.entry_price||0),stop_loss:Number(size.stop_loss||0),take_profit:Number(size.tp1||0)}}}];"
+      },
+      "id": "exec-build",
+      "name": "EXEC Build Order Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TRADE_ORACLE_PLATFORM_BASE_URL || 'http://127.0.0.1:8000') + '/services/ops/ops/execution/transmit-limit-order' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.execution_request }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "exec-call",
+      "name": "EXEC Transmit Limit Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3340,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{event_type:'risk_rejected',payload:$input.first().json}}];"
+      },
+      "id": "alert-risk-rejected",
+      "name": "ALERT Risk Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{event_type:'execution_result',payload:$input.first().json}}];"
+      },
+      "id": "alert-exec-result",
+      "name": "ALERT Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{json:{event_type:'no_trade',payload:$input.first().json}}];"
+      },
+      "id": "alert-no-trade",
+      "name": "ALERT No Trade Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "TRG Schedule Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "CTX Resolve Runtime Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CTX Resolve Runtime Context": {
+      "main": [
+        [
+          {
+            "node": "PRECHECK Platform Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PRECHECK Platform Health": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Build Run Once Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Build Run Once Request": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Run Super Brain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Run Super Brain": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Normalize Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Normalize Result": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Pending Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Pending Review?": {
+      "main": [
+        [
+          {
+            "node": "ALERT Prepare OpenClaw Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "EXEC Candidate Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Candidate Approved?": {
+      "main": [
+        [
+          {
+            "node": "RISK Build Recheck Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ALERT No Trade Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Build Recheck Request": {
+      "main": [
+        [
+          {
+            "node": "RISK Optional Recheck",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Optional Recheck": {
+      "main": [
+        [
+          {
+            "node": "RISK Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Passed?": {
+      "main": [
+        [
+          {
+            "node": "EXEC Build Order Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ALERT Risk Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Build Order Payload": {
+      "main": [
+        [
+          {
+            "node": "EXEC Transmit Limit Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Transmit Limit Order": {
+      "main": [
+        [
+          {
+            "node": "ALERT Execution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "trade-oracle-platform-skeleton-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

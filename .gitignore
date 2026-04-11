@@ -28,6 +28,7 @@ venv/
 env/
 ENV/
 venv.bak/
+.venv-langgraph/
 
 # VS Code
 .vscode/
@@ -38,3 +39,7 @@ venv.bak/
 
 # Logs
 *.log
+
+# Test cache / temp artifacts
+.pytest_cache/
+pytest-cache-files-*

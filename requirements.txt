@@ -1,31 +1,10 @@
+# Default environment for the legacy TRADE_ORACLE trading pipeline.
+#
+# This file intentionally excludes the LangGraph / FastAPI orchestration stack
+# because those packages pull newer httpx/websockets versions that conflict with
+# the existing Supabase-based trading environment.
+#
+# For the LangGraph + MCP architecture, use:
+#   requirements.langgraph.txt
 
-# Network Routing & API Execution Bridges
-ccxt==4.2.14
-aiohttp==3.9.3
-requests==2.31.0
-
-# Quantitative Analysis & Vectorized Processing
-pandas>=2.2.0
-pandas-ta>=0.3.14b0
-
-# Artificial Intelligence Synthesis Routing
-openai==1.12.0
-
-# Phase 1 LangGraph Supervisor Graph
-langchain-core>=1.0.0
-langchain-openai>=1.0.0
-langchain-google-genai>=3.0.0
-langgraph>=1.0.0
-langgraph-checkpoint-sqlite>=3.0.0
-fastapi>=0.116.0
-
-# Validation & Structural Type Enforcement
-pydantic==2.12.5
-
-# Cloud-Native Database & Persistent State Memory
-supabase==2.3.4
-python-dotenv==1.0.1
-
-# Quantum Processing Unit (QPU) Optimization Stub
-dimod>=0.12.14
-scipy>=1.14.0
+-r requirements.trading.txt

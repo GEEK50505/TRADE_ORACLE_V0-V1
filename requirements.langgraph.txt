@@ -1,0 +1,27 @@
+# Dedicated environment for the TRADE_ORACLE LangGraph + MCP architecture.
+# This stack is intentionally isolated from the legacy trading environment.
+
+# Core utility/runtime
+python-dotenv==1.0.1
+requests==2.31.0
+pydantic==2.12.5
+httpx==0.28.1
+pandas>=2.2.0
+
+# LLM / orchestration stack
+openai==2.30.0
+langchain-core==1.2.26
+langchain-openai==1.1.12
+langchain-google-genai==4.2.1
+langgraph==1.1.6
+langgraph-checkpoint-sqlite==3.0.3
+
+# MCP FastAPI bridge
+fastapi==0.135.3
+uvicorn==0.44.0
+
+# Scanner compatibility for end-to-end /superbrain/run-once
+ccxt==4.2.14
+
+# Local verification
+pytest==9.0.2

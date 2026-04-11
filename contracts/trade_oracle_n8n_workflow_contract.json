@@ -1,0 +1,106 @@
+{
+  "contract_version": "1.0.0",
+  "workflow_name": "TRADE_ORACLE_Super_Brain_n8n",
+  "description": "Thin webhook contract for n8n to orchestrate scanner -> LangGraph review -> human approval -> execution.",
+  "services": {
+    "platform": {
+      "base_url_env": "TRADE_ORACLE_PLATFORM_BASE_URL",
+      "default_local_url": "http://127.0.0.1:8000",
+      "auth_header": "X-Trade-Oracle-API-Key",
+      "api_key_env": "TRADE_ORACLE_PLATFORM_API_KEY"
+    }
+  },
+  "workflow_steps": [
+    {
+      "step": 1,
+      "name": "super_brain_run_once",
+      "method": "POST",
+      "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/superbrain/run-once",
+      "body": {
+        "watchlist": [
+          "BTC/USDT",
+          "ETH/USDT",
+          "SOL/USDT",
+          "XRP/USDT",
+          "DOGE/USDT",
+          "AVAX/USDT"
+        ],
+        "account_state": {
+          "current_balance": "{{ $json.current_balance }}",
+          "highest_equity": "{{ $json.highest_equity }}",
+          "active_trades_count": "{{ $json.active_trades_count }}"
+        },
+        "auto_approve": false,
+        "enable_live_llm": false
+      },
+      "success_paths": {
+        "pending_review": "result.evaluations[?(@.status=='pending_review')]",
+        "ranked_candidates": "result.candidates"
+      }
+    },
+    {
+      "step": 2,
+      "name": "human_review_resume",
+      "trigger_condition": "Only when one evaluation has status='pending_review'",
+      "method": "POST",
+      "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/superbrain/review-resume",
+      "body": {
+        "thread_id": "{{ $json.thread_id }}",
+        "human_decision": {
+          "action": "APPROVE",
+          "reviewer": "openclaw",
+          "notes": "Approved from n8n/OpenClaw."
+        }
+      },
+      "success_path": "result.candidate"
+    },
+    {
+      "step": 3,
+      "name": "optional_risk_recheck",
+      "trigger_condition": "Optional guard before execution if n8n wants an external re-check",
+      "method": "POST",
+      "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/services/ops/ops/risk/evaluate",
+      "body": {
+        "current_balance": "{{ $json.current_balance }}",
+        "highest_equity": "{{ $json.highest_equity }}",
+        "active_trades_count": "{{ $json.active_trades_count }}",
+        "entry_price": "{{ $json.entry_price }}",
+        "atr": "{{ $json.atr }}",
+        "direction": "{{ $json.direction }}"
+      },
+      "success_path": "result.position_size"
+    },
+    {
+      "step": 4,
+      "name": "transmit_limit_order",
+      "trigger_condition": "Only when candidate.execute_trade=true and candidate.execution_status='approved'",
+      "method": "POST",
+      "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/services/ops/ops/execution/transmit-limit-order",
+      "body": {
+        "broker_id": "{{ $env.MATCH_TRADER_BROKER_ID }}",
+        "email": "{{ $env.MATCH_TRADER_USER }}",
+        "password": "{{ $env.MATCH_TRADER_PASS }}",
+        "base_url": "{{ $env.MATCH_TRADER_BASE_URL }}",
+        "system_uuid": "{{ $env.MATCH_TRADER_SYSTEM_UUID }}",
+        "symbol": "{{ $json.symbol }}",
+        "direction": "{{ $json.direction }}",
+        "size": "{{ $json.position_sizing.tokens }}",
+        "limit_price": "{{ $json.position_sizing.entry_price }}",
+        "stop_loss": "{{ $json.position_sizing.stop_loss }}",
+        "take_profit": "{{ $json.position_sizing.tp1 }}"
+      },
+      "success_path": "result.order_transmitted"
+    }
+  ],
+  "status_rules": {
+    "pending_review": "The LangGraph gatekeeper interrupted for human approval. Store thread_id and review_context in n8n state.",
+    "completed": "The LangGraph thread reached a BUY/SELL decision and returned a candidate payload.",
+    "no_trade": "The LangGraph thread ended in PASS or rejected execution.",
+    "approved_execution": "Only candidates with execute_trade=true and execution_status='approved' are eligible for order transmission."
+  },
+  "minimum_n8n_state": {
+    "thread_id": "Persist per human-review branch so resume-review can target the same LangGraph checkpoint.",
+    "account_state": "current_balance, highest_equity, active_trades_count",
+    "candidate": "symbol, direction, position_sizing, final_decision"
+  }
+}

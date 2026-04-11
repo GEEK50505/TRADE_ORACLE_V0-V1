@@ -1,0 +1,13 @@
+.git
+.venv
+.venv-langgraph
+.vscode
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.pyc
+*.pyo
+*.pyd
+output.txt
+pip_install_log.txt
+results/*.sqlite

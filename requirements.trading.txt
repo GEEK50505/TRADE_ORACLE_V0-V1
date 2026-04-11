@@ -1,0 +1,29 @@
+# Legacy TRADE_ORACLE trading/runtime environment.
+# Use this for the existing scanner + risk + execution + Supabase pipeline.
+
+# Network Routing & API Execution Bridges
+ccxt==4.2.14
+aiohttp==3.9.3
+requests==2.31.0
+
+# Quantitative Analysis & Vectorized Processing
+pandas>=2.2.0
+pandas-ta>=0.3.14b0
+
+# Artificial Intelligence Synthesis Routing
+openai==1.12.0
+
+# Validation & Structural Type Enforcement
+pydantic==2.6.1
+
+# Cloud-Native Database & Persistent State Memory
+supabase==2.3.4
+python-dotenv==1.0.1
+
+# Keep Supabase-compatible transport versions explicit.
+httpx>=0.24,<0.26
+websockets>=11,<13
+
+# Quantum Processing Unit (QPU) Optimization Stub
+dimod>=0.12.14
+scipy>=1.14.0

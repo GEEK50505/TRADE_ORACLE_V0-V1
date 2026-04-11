@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8000 \
+    TRADE_ORACLE_LANGGRAPH_CHECKPOINTER_PATH=results/trade_oracle_phase1.sqlite
+
+WORKDIR /app
+
+COPY requirements.langgraph.txt ./requirements.langgraph.txt
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.langgraph.txt
+
+COPY . .
+
+RUN mkdir -p results
+
+EXPOSE 8000
+
+CMD ["sh", "-c", "uvicorn api.trade_oracle_platform_service:app --host 0.0.0.0 --port ${PORT:-8000}"]

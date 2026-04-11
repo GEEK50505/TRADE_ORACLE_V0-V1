@@ -8,6 +8,14 @@ Blueprint alignment:
 - Blueprint Section 3: Detailed Agent Roles and Responsibilities
 - Blueprint Section 5: Phase 1 Core Graph + Supervisor
 - Blueprint Section 6: Pregel runtime, interrupt(), RetryPolicy, model tiering
+
+Deployment notes:
+- n8n is the outer scheduler and should trigger the graph over HTTP via the
+  FastAPI service layer, not by importing this module directly in production.
+- FastAPI + MCP endpoints remain the stable tool boundary for scanner, risk, and
+  execution workflows, while this module remains the LangGraph reasoning layer.
+- interrupt() is the human-in-the-loop pause point; n8n/OpenClaw should persist
+  the thread id and later resume the exact checkpoint with APPROVE or HALT_SYSTEM.
 """
 
 from __future__ import annotations
@@ -16,13 +24,28 @@ import json
 import logging
 import os
 import sqlite3
+import inspect
+import asyncio
 from dataclasses import dataclass, field
 from operator import add
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.trade_oracle_mcp_service import (
+    MCPAnalysisRequest,
+    RiskGuardrailsRequest,
+    TradeOracleMCPHttpClient,
+    TradeOracleMCPServiceError,
+    build_fundamental_snapshot_response,
+    build_macro_snapshot_response,
+    build_risk_guardrails_response,
+    build_technical_snapshot_response,
+    build_trade_oracle_mcp_http_tools,
+    build_tokenomics_snapshot_response,
+)
 from config import settings
 
 LOGGER = logging.getLogger("TRADE_ORACLE.LangGraph.Phase1")
@@ -43,7 +66,6 @@ RESERVED_SPECIALIST_NODE = "reserved_specialist_placeholder"
 
 try:
     from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import StructuredTool
     from langgraph.checkpoint.sqlite import SqliteSaver
     from langgraph.graph import END, START, StateGraph
@@ -55,7 +77,6 @@ except ImportError as exc:  # pragma: no cover - exercised only before deps are 
     END = "__end__"
     HumanMessage = None
     RetryPolicy = None
-    RunnableConfig = dict[str, Any]
     SqliteSaver = None
     START = "__start__"
     StateGraph = None
@@ -111,6 +132,13 @@ def ensure_langgraph_dependencies() -> None:
     ) from LANGGRAPH_IMPORT_ERROR
 
 
+async def _maybe_await(value: Any) -> Any:
+    """Await values only when they are awaitable, so fake and live clients both work."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 def as_message(role: Literal["system", "human", "ai"], content: str) -> Any:
     """Create a LangChain message when available, otherwise fall back to a plain dict."""
     role_to_cls = {
@@ -138,6 +166,18 @@ class FinalPairContext(BaseModel):
     overall_survival: bool
 
 
+class AccountStateContext(BaseModel):
+    """Execution-state context carried alongside the scanner setup."""
+
+    model_config = ConfigDict(extra="allow")
+
+    current_balance: float = Field(default=settings.INITIAL_BALANCE)
+    highest_equity: float = Field(default=settings.INITIAL_BALANCE)
+    active_trades_count: int = Field(default=0, ge=0)
+    source: str = "scanner_default"
+    fallback_reason: str = ""
+
+
 class ScannerRawSetup(BaseModel):
     """Scanner payload carried into the LangGraph thread."""
 
@@ -161,6 +201,26 @@ class ScannerRawSetup(BaseModel):
     portfolio_overall_survival: bool = False
     scanner_metadata: dict[str, Any] = Field(default_factory=dict)
     tokenomics_watch: dict[str, Any] = Field(default_factory=dict)
+    account_state: AccountStateContext = Field(default_factory=AccountStateContext)
+
+
+class Phase2ScannerSetup(BaseModel):
+    """Typed adapter model for the current Phase 2 MarketScanner output."""
+
+    model_config = ConfigDict(extra="allow")
+
+    symbol: str
+    regime: str
+    current_price: float
+    atr: float
+    timeframe: str = "1d"
+    fibonacci_convergence_proximity: float = 0.02
+    ema_cluster_distance: float = 0.0
+    setup_quality: float = Field(default=0.6, ge=0.0, le=1.0)
+    rationale: str = ""
+    narrative_tags: list[str] = Field(default_factory=list)
+    tokenomics_watch: dict[str, Any] = Field(default_factory=dict)
+    scanner_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntentRouterPlan(BaseModel):
@@ -203,6 +263,8 @@ class FinalTradeDecision(BaseModel):
     risk_budget_usd: float
     leverage_cap: float
     consistency_rule_limit: float
+    risk_guardrails: dict[str, Any] = Field(default_factory=dict)
+    position_sizing: dict[str, Any] = Field(default_factory=dict)
     execution_ready: bool
     execution_status: Literal["pending_human_review", "approved", "rejected", "halted", "pass"]
     operator_notes: str = ""
@@ -273,6 +335,11 @@ class ToolStubArgs(BaseModel):
     benchmark_regime_status: str = ""
     localized_atr: float = 0.0
     fibonacci_convergence_proximity: float = 0.0
+    current_price: float = 0.0
+    setup_direction: str = "PASS"
+    narrative_tags: list[str] = Field(default_factory=list)
+    tokenomics_watch: dict[str, Any] = Field(default_factory=dict)
+    extra_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class TradeState(TypedDict, total=False):
@@ -307,6 +374,7 @@ class TradeState(TypedDict, total=False):
     technical_validation: dict[str, Any]
     technical_summary: str
     gatekeeper_status: str
+    risk_guardrails_result: dict[str, Any]
     execution_ready: bool
     review_required: bool
     review_context: dict[str, Any]
@@ -529,8 +597,17 @@ def _state_to_prompt_context(state: TradeState) -> dict[str, Any]:
         "tokenomics_clearance": state.get("tokenomics_clearance"),
         "technical_validation": state.get("technical_validation", {}),
         "adversarial_review": state.get("adversarial_review", ""),
+        "risk_guardrails_result": state.get("risk_guardrails_result", {}),
         "specialist_reports": state.get("specialist_reports", []),
     }
+
+
+def _tool_result_payload(tool_result: dict[str, Any]) -> dict[str, Any]:
+    """Extract the normalized MCP result payload when the tool call succeeded."""
+    if str(tool_result.get("status", "")).lower() != "ok":
+        return {}
+    result = tool_result.get("result", {})
+    return result if isinstance(result, dict) else {}
 
 
 def _deterministic_macro_report(setup: ScannerRawSetup) -> MacroLiquidityReport:
@@ -562,6 +639,34 @@ def _deterministic_macro_report(setup: ScannerRawSetup) -> MacroLiquidityReport:
     )
 
 
+def _macro_report_from_tool_result(setup: ScannerRawSetup, tool_result: dict[str, Any]) -> MacroLiquidityReport:
+    """Prefer MCP tool output for macro scoring before falling back to setup heuristics."""
+    result = _tool_result_payload(tool_result)
+    if not result:
+        return _deterministic_macro_report(setup)
+
+    macro_regime = cast(
+        Literal["risk_on", "risk_off", "neutral"],
+        str(result.get("macro_regime", "neutral")).lower(),
+    )
+    macro_score = float(result.get("macro_score", 0.55))
+    veto_trade = bool(result.get("veto_trade", False))
+    risk_flags = list(result.get("risk_flags", []))
+    if veto_trade and not risk_flags:
+        risk_flags.append("Macro regime vetoed the setup direction.")
+
+    return MacroLiquidityReport(
+        macro_score=macro_score,
+        macro_regime=macro_regime,
+        veto_trade=veto_trade,
+        macro_summary=(
+            f"Macro regime {macro_regime} scored {macro_score:.2f} for "
+            f"{setup.asset_ticker} on a {setup.setup_direction} bias."
+        ),
+        risk_flags=risk_flags,
+    )
+
+
 def _deterministic_fundamental_report(setup: ScannerRawSetup) -> FundamentalNarrativeReport:
     catalysts = list(setup.narrative_tags) or [
         "High-liquidity majors remain preferred under Maven-style execution constraints."
@@ -573,6 +678,29 @@ def _deterministic_fundamental_report(setup: ScannerRawSetup) -> FundamentalNarr
         fundamental_summary=(
             f"Fundamental placeholder cleared={fundamental_clearance}. "
             f"Catalysts tracked: {', '.join(catalysts)}"
+        ),
+        fundamental_catalysts=catalysts,
+        risk_flags=risk_flags,
+    )
+
+
+def _fundamental_report_from_tool_result(
+    setup: ScannerRawSetup,
+    tool_result: dict[str, Any],
+) -> FundamentalNarrativeReport:
+    """Build the fundamental report from MCP output when available."""
+    result = _tool_result_payload(tool_result)
+    if not result:
+        return _deterministic_fundamental_report(setup)
+
+    catalysts = list(result.get("fundamental_catalysts", [])) or list(setup.narrative_tags)
+    risk_flags = list(result.get("risk_flags", []))
+    clearance = bool(result.get("fundamental_clearance", not bool(risk_flags)))
+    return FundamentalNarrativeReport(
+        fundamental_clearance=clearance,
+        fundamental_summary=(
+            f"Fundamental review cleared={clearance} with catalysts: "
+            f"{', '.join(catalysts) if catalysts else 'none'}."
         ),
         fundamental_catalysts=catalysts,
         risk_flags=risk_flags,
@@ -593,6 +721,31 @@ def _deterministic_tokenomics_report(setup: ScannerRawSetup) -> TokenomicsAuditR
         tokenomics_summary=(
             f"Tokenomics placeholder clearance={clearance}. "
             f"Next dilutive-event window={dilutive_days} days."
+        ),
+        dilutive_event_within_days=dilutive_days,
+        major_unlock_flag=major_unlock_flag,
+        risk_flags=risk_flags,
+    )
+
+
+def _tokenomics_report_from_tool_result(
+    setup: ScannerRawSetup,
+    tool_result: dict[str, Any],
+) -> TokenomicsAuditReport:
+    """Build the tokenomics report from MCP output when available."""
+    result = _tool_result_payload(tool_result)
+    if not result:
+        return _deterministic_tokenomics_report(setup)
+
+    dilutive_days = int(result.get("dilutive_event_within_days", 999))
+    major_unlock_flag = bool(result.get("major_unlock_flag", False))
+    risk_flags = list(result.get("risk_flags", []))
+    clearance = bool(result.get("tokenomics_clearance", dilutive_days > 10 and not major_unlock_flag))
+    return TokenomicsAuditReport(
+        tokenomics_clearance=clearance,
+        tokenomics_summary=(
+            f"Tokenomics review cleared={clearance}; unlock flag={major_unlock_flag}; "
+            f"dilutive window={dilutive_days} day(s)."
         ),
         dilutive_event_within_days=dilutive_days,
         major_unlock_flag=major_unlock_flag,
@@ -625,19 +778,68 @@ def _deterministic_technical_report(setup: ScannerRawSetup) -> TechnicalConfluen
     )
 
 
-def _deterministic_devils_advocate_report(setup: ScannerRawSetup) -> DevilsAdvocateReport:
+def _technical_report_from_tool_result(
+    setup: ScannerRawSetup,
+    tool_result: dict[str, Any],
+) -> TechnicalConfluenceReport:
+    """Build the technical report from MCP output when available."""
+    result = _tool_result_payload(tool_result)
+    if not result:
+        return _deterministic_technical_report(setup)
+
+    validation = {
+        "is_valid": bool(result.get("is_valid", False)),
+        "fib_ok": bool(result.get("fib_ok", False)),
+        "atr_ok": bool(result.get("atr_ok", False)),
+        "localized_atr": float(result.get("localized_atr", setup.localized_atr)),
+        "fibonacci_convergence_proximity": float(
+            result.get("fibonacci_convergence_proximity", setup.fibonacci_convergence_proximity)
+        ),
+    }
+    risk_flags = list(result.get("risk_flags", []))
+    return TechnicalConfluenceReport(
+        technical_validation=validation,
+        technical_summary=(
+            f"Technical validation is_valid={validation['is_valid']} "
+            f"(fib_ok={validation['fib_ok']}, atr_ok={validation['atr_ok']})."
+        ),
+        risk_flags=risk_flags,
+    )
+
+
+def _deterministic_devils_advocate_report(setup: ScannerRawSetup, state: TradeState) -> DevilsAdvocateReport:
+    """Derive adversarial concerns from the full state, not just a static placeholder."""
     failure_modes = [
         "Volatility expansion can overwhelm the $10 flat-risk budget.",
         "Same-family concentration may create hidden correlation even with pair diversity penalties.",
     ]
+    if not bool(state.get("technical_validation", {}).get("is_valid", True)):
+        failure_modes.append("Technical confluence is fragile and can invalidate before execution.")
+    if not bool(state.get("fundamental_clearance", True)):
+        failure_modes.append("Narrative or headline drift can flip the setup after routing.")
+    if not bool(state.get("tokenomics_clearance", True)):
+        failure_modes.append("Supply-side dilution can undermine the trade before targets are reached.")
+    if setup.account_state.active_trades_count >= max(settings.MAX_CONCURRENT_TRADES - 1, 1):
+        failure_modes.append("Portfolio concurrency is already elevated, leaving less room for slippage.")
+    if setup.portfolio_max_dd_pct >= 2.5:
+        failure_modes.append("Portfolio drawdown is already close to the Maven trailing limit.")
+
+    confidence_dampener = 0.15
+    if setup.portfolio_max_dd_pct >= 2.5:
+        confidence_dampener += 0.10
+    if setup.account_state.active_trades_count >= max(settings.MAX_CONCURRENT_TRADES - 1, 1):
+        confidence_dampener += 0.05
+    if not bool(state.get("technical_validation", {}).get("is_valid", True)):
+        confidence_dampener += 0.10
+
     return DevilsAdvocateReport(
         adversarial_review=(
-            f"Devil's Advocate placeholder: even with shortlist expectancy "
-            f"{setup.portfolio_expectancy:.4f}, the setup can still fail if volatility expands "
-            f"faster than the $10 flat-risk buffer can absorb."
+            f"Adversarial review: expectancy={setup.portfolio_expectancy:.4f}, "
+            f"portfolio_dd={setup.portfolio_max_dd_pct:.4f}, active_trades={setup.account_state.active_trades_count}. "
+            f"Primary threat remains volatility expansion versus the fixed ${settings.RISK_AMOUNT_USD:.2f} risk budget."
         ),
         failure_modes=failure_modes,
-        confidence_dampener=0.15,
+        confidence_dampener=min(confidence_dampener, 0.45),
     )
 
 
@@ -649,56 +851,86 @@ def _tool_payload_from_setup(setup: ScannerRawSetup) -> dict[str, Any]:
         benchmark_regime_status=setup.benchmark_regime_status,
         localized_atr=setup.localized_atr,
         fibonacci_convergence_proximity=setup.fibonacci_convergence_proximity,
+        current_price=setup.current_price,
+        setup_direction=setup.setup_direction,
+        narrative_tags=setup.narrative_tags,
+        tokenomics_watch=setup.tokenomics_watch,
+        extra_context={
+            "scanner_metadata": setup.scanner_metadata,
+            "setup_quality": setup.setup_quality,
+            "ema_cluster_distance": setup.ema_cluster_distance,
+            "timeframe": setup.timeframe,
+            "portfolio_expectancy": setup.portfolio_expectancy,
+            "portfolio_max_dd_pct": setup.portfolio_max_dd_pct,
+            "portfolio_consistency_score": setup.portfolio_consistency_score,
+            "portfolio_overall_survival": setup.portfolio_overall_survival,
+            "candidate_portfolio_size": len(setup.candidate_portfolio),
+            "account_state": setup.account_state.model_dump(),
+        },
+    ).model_dump()
+
+
+def _risk_guardrails_payload_from_setup(setup: ScannerRawSetup) -> dict[str, Any]:
+    """Normalize scanner and account-state data into the risk guardrails envelope."""
+    direction = "LONG" if setup.setup_direction.upper() == "BUY" else "SHORT"
+    return RiskGuardrailsRequest(
+        current_balance=setup.account_state.current_balance,
+        highest_equity=setup.account_state.highest_equity,
+        active_trades_count=setup.account_state.active_trades_count,
+        entry_price=setup.current_price,
+        atr=setup.localized_atr,
+        direction=cast(Literal["LONG", "SHORT", "BUY", "SELL"], direction),
     ).model_dump()
 
 
 def _stub_macro_snapshot(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "tool_name": "macro_snapshot",
-        "status": "stub",
-        "detail": "Phase 1 StructuredTool placeholder. Replace with FastAPI + MCP macro endpoint in Phase 3.",
-        "payload": kwargs,
-    }
+    request = MCPAnalysisRequest.model_validate(kwargs)
+    return build_macro_snapshot_response(request).model_dump()
 
 
 def _stub_fundamental_snapshot(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "tool_name": "fundamental_snapshot",
-        "status": "stub",
-        "detail": "Phase 1 StructuredTool placeholder. Replace with FastAPI + MCP fundamentals endpoint in Phase 3.",
-        "payload": kwargs,
-    }
+    request = MCPAnalysisRequest.model_validate(kwargs)
+    return build_fundamental_snapshot_response(request).model_dump()
 
 
 def _stub_tokenomics_snapshot(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "tool_name": "tokenomics_snapshot",
-        "status": "stub",
-        "detail": "Phase 1 StructuredTool placeholder. Replace with FastAPI + MCP tokenomics endpoint in Phase 3.",
-        "payload": kwargs,
-    }
+    request = MCPAnalysisRequest.model_validate(kwargs)
+    return build_tokenomics_snapshot_response(request).model_dump()
 
 
 def _stub_technical_snapshot(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "tool_name": "technical_snapshot",
-        "status": "stub",
-        "detail": "Phase 1 StructuredTool placeholder. Replace with FastAPI + MCP technical endpoint in Phase 3.",
-        "payload": kwargs,
-    }
+    request = MCPAnalysisRequest.model_validate(kwargs)
+    return build_technical_snapshot_response(request).model_dump()
 
 
 def _stub_risk_guardrails(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "tool_name": "risk_guardrails",
-        "status": "stub",
-        "detail": "Phase 1 StructuredTool placeholder. Replace with FastAPI + MCP risk endpoint in Phase 3.",
-        "payload": kwargs,
-    }
+    request = RiskGuardrailsRequest.model_validate(kwargs)
+    return build_risk_guardrails_response(request).model_dump()
 
 
-def build_mcp_tool_stubs() -> dict[str, Any]:
-    """Prepare StructuredTool wrappers without invoking any external Python scripts yet."""
+def build_mcp_tool_stubs(
+    *,
+    service_base_url: str | None = None,
+    mcp_http_client: TradeOracleMCPHttpClient | None = None,
+) -> dict[str, Any]:
+    """
+    Prepare either local StructuredTool stubs or HTTP-backed MCP tools.
+
+    The default remains purely local and deterministic for Phase 1 / Phase 2.
+    Passing `service_base_url` switches the graph over to the FastAPI MCP
+    microservice boundary without requiring any topology changes, which is the
+    intended production path for n8n-triggered remote deployment.
+    """
+    if service_base_url is not None or mcp_http_client is not None:
+        client = mcp_http_client or TradeOracleMCPHttpClient(
+            base_url=service_base_url or settings.TRADE_ORACLE_MCP_BASE_URL,
+            api_key=settings.TRADE_ORACLE_MCP_API_KEY,
+        )
+        return build_trade_oracle_mcp_http_tools(
+            client=client,
+            structured_tool_cls=StructuredTool,
+        )
+
     if StructuredTool is None:
         return {
             "macro_snapshot": _stub_macro_snapshot,
@@ -712,31 +944,31 @@ def build_mcp_tool_stubs() -> dict[str, Any]:
             func=_stub_macro_snapshot,
             name="macro_snapshot",
             description="Future FastAPI + MCP entrypoint for macro-liquidity data.",
-            args_schema=ToolStubArgs,
+            args_schema=MCPAnalysisRequest,
         ),
         "fundamental_snapshot": StructuredTool.from_function(
             func=_stub_fundamental_snapshot,
             name="fundamental_snapshot",
             description="Future FastAPI + MCP entrypoint for narrative and sentiment data.",
-            args_schema=ToolStubArgs,
+            args_schema=MCPAnalysisRequest,
         ),
         "tokenomics_snapshot": StructuredTool.from_function(
             func=_stub_tokenomics_snapshot,
             name="tokenomics_snapshot",
             description="Future FastAPI + MCP entrypoint for token unlock and on-chain supply checks.",
-            args_schema=ToolStubArgs,
+            args_schema=MCPAnalysisRequest,
         ),
         "technical_snapshot": StructuredTool.from_function(
             func=_stub_technical_snapshot,
             name="technical_snapshot",
             description="Future FastAPI + MCP entrypoint for technical confluence validation.",
-            args_schema=ToolStubArgs,
+            args_schema=MCPAnalysisRequest,
         ),
         "risk_guardrails": StructuredTool.from_function(
             func=_stub_risk_guardrails,
             name="risk_guardrails",
             description="Future FastAPI + MCP entrypoint for deterministic risk and sizing audits.",
-            args_schema=ToolStubArgs,
+            args_schema=RiskGuardrailsRequest,
         ),
     }
 
@@ -744,9 +976,55 @@ def build_mcp_tool_stubs() -> dict[str, Any]:
 def invoke_tool_stub(tool_stubs: dict[str, Any], name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Invoke a StructuredTool when available, otherwise call the plain stub function."""
     tool = tool_stubs[name]
-    if hasattr(tool, "invoke"):
-        return cast(dict[str, Any], tool.invoke(payload))
-    return cast(dict[str, Any], tool(**payload))
+    try:
+        if hasattr(tool, "invoke"):
+            return cast(dict[str, Any], tool.invoke(payload))
+        return cast(dict[str, Any], tool(**payload))
+    except TradeOracleMCPServiceError as exc:
+        body = dict(exc.response_body or {})
+        body.setdefault("tool_name", name)
+        body.setdefault("status", "error")
+        body.setdefault("detail", str(exc))
+        body.setdefault("payload", payload)
+        body.setdefault("result", {})
+        body.setdefault(
+            "error",
+            {
+                "code": "mcp_service_error",
+                "status_code": exc.status_code,
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        )
+        return body
+    except Exception as exc:
+        return {
+            "tool_name": name,
+            "status": "error",
+            "detail": f"Tool invocation failed inside the LangGraph specialist node: {exc}",
+            "payload": payload,
+            "result": {},
+            "error": {
+                "code": "tool_invocation_error",
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+        }
+
+
+def _tool_error_rows(agent_name: str, tool_result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert one MCP tool failure into a normalized state error row."""
+    if str(tool_result.get("status", "")).lower() != "error":
+        return []
+    return [
+        {
+            "agent": agent_name,
+            "tool_name": tool_result.get("tool_name", ""),
+            "detail": tool_result.get("detail", ""),
+            "error": tool_result.get("error", {}),
+            "meta": tool_result.get("meta", {}),
+        }
+    ]
 
 
 def _trim_messages(messages: list[Any], keep_last: int = 12) -> list[Any]:
@@ -790,7 +1068,17 @@ def _build_review_payload(state: TradeState, final_decision: FinalTradeDecision)
         "risk_budget_usd": settings.RISK_AMOUNT_USD,
         "macro_score": state.get("macro_score", 0.0),
         "adversarial_review": state.get("adversarial_review", ""),
+        "account_state": setup.account_state.model_dump(),
+        "risk_guardrails": final_decision.risk_guardrails or state.get("risk_guardrails_result", {}),
         "final_decision": final_decision.model_dump(),
+        "audit_snapshot": {
+            "audit_trail": list(state.get("audit_trail", [])),
+            "completed_agents": list(state.get("completed_agents", [])),
+            "errors": list(state.get("errors", [])),
+            "tool_results": list(state.get("tool_results", [])),
+            "specialist_reports": list(state.get("specialist_reports", [])),
+            "thread_metadata": dict(state.get("thread_metadata", {})),
+        },
     }
 
 
@@ -800,6 +1088,326 @@ def _normalize_resume_value(value: Any) -> HumanReviewDecision:
     if isinstance(value, str):
         return HumanReviewDecision(action=value.upper())
     return HumanReviewDecision.model_validate(value)
+
+
+def _build_default_match_trader_client() -> Any | None:
+    """Construct the live Match-Trader client when credentials and deps are available."""
+    required_values = [
+        settings.MATCH_TRADER_BROKER_ID,
+        settings.MATCH_TRADER_USER,
+        settings.MATCH_TRADER_PASS,
+        settings.MATCH_TRADER_BASE_URL,
+    ]
+    if not all(required_values):
+        return None
+    try:
+        from execution.match_trader import MatchTraderAPI
+    except ImportError as exc:  # pragma: no cover - depends on optional runtime env
+        LOGGER.warning("Match-Trader client import unavailable for hydration: %s", exc)
+        return None
+    return MatchTraderAPI(
+        broker_id=settings.MATCH_TRADER_BROKER_ID,
+        email=settings.MATCH_TRADER_USER,
+        password=settings.MATCH_TRADER_PASS,
+        base_url=settings.MATCH_TRADER_BASE_URL,
+    )
+
+
+def _build_default_state_manager() -> Any | None:
+    """Construct the live Supabase state manager when credentials and deps are available."""
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return None
+    try:
+        from journal.supabase_client import StateManager
+    except ImportError as exc:  # pragma: no cover - depends on optional runtime env
+        LOGGER.warning("Supabase state manager import unavailable for hydration: %s", exc)
+        return None
+    try:
+        return StateManager()
+    except Exception as exc:  # pragma: no cover - depends on optional runtime env
+        LOGGER.warning("Supabase state manager initialization failed: %s", exc)
+        return None
+
+
+async def hydrate_account_state_context(
+    *,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+) -> AccountStateContext:
+    """
+    Hydrate account state from Match-Trader and Supabase when available.
+
+    The function is intentionally fail-safe. If live services are unavailable, it
+    returns a deterministic fallback context anchored to the configured balance.
+    """
+    context = AccountStateContext()
+    current_balance = float(context.current_balance)
+    highest_equity = float(context.highest_equity)
+    active_trades_count = int(context.active_trades_count)
+    source_parts: list[str] = []
+    fallback_reason = ""
+
+    client = platform_state_client if platform_state_client is not None else _build_default_match_trader_client()
+    if client is not None:
+        try:
+            authenticate = getattr(client, "authenticate", None)
+            if callable(authenticate):
+                authenticated = await _maybe_await(authenticate())
+                if authenticated is False:
+                    raise RuntimeError("Match-Trader authentication returned False.")
+
+            get_platform_details = getattr(client, "get_platform_details", None)
+            if not callable(get_platform_details):
+                raise RuntimeError("Match-Trader client does not expose get_platform_details().")
+
+            details = await _maybe_await(get_platform_details())
+            if not isinstance(details, dict):
+                raise RuntimeError("Match-Trader platform details payload was empty or invalid.")
+
+            current_balance = float(details.get("equity", current_balance))
+            active_trades_count = int(details.get("active_trades", active_trades_count))
+            highest_equity = max(highest_equity, current_balance)
+            source_parts.append("match_trader")
+        except Exception as exc:
+            LOGGER.warning("Live Match-Trader hydration failed. Falling back to local defaults: %s", exc)
+            fallback_reason = str(exc)
+
+    memory = state_manager if state_manager is not None else _build_default_state_manager()
+    if memory is not None:
+        try:
+            highest_equity = float(memory.update_high_watermark(current_balance))
+            source_parts.append("supabase")
+        except Exception as exc:
+            LOGGER.warning("Supabase watermark hydration failed. Keeping local high watermark: %s", exc)
+            if not fallback_reason:
+                fallback_reason = str(exc)
+
+    if not source_parts:
+        source = "fallback_default"
+    else:
+        source = "+".join(source_parts)
+        if fallback_reason:
+            source = f"{source}_partial_fallback"
+
+    return AccountStateContext(
+        current_balance=current_balance,
+        highest_equity=highest_equity,
+        active_trades_count=active_trades_count,
+        source=source,
+        fallback_reason=fallback_reason,
+    )
+
+
+async def hydrate_raw_setup_account_state(
+    raw_setup: dict[str, Any],
+    *,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+) -> dict[str, Any]:
+    """Inject hydrated account context into an inbound scanner payload."""
+    setup = ScannerRawSetup.model_validate(raw_setup)
+    hydrated_account_state = await hydrate_account_state_context(
+        platform_state_client=platform_state_client,
+        state_manager=state_manager,
+    )
+    scanner_metadata = dict(setup.scanner_metadata)
+    scanner_metadata["account_hydration_source"] = hydrated_account_state.source
+    updated_setup = setup.model_copy(
+        update={
+            "account_state": hydrated_account_state,
+            "scanner_metadata": scanner_metadata,
+        }
+    )
+    return updated_setup.model_dump()
+
+
+def hydrate_raw_setup_account_state_sync(
+    raw_setup: dict[str, Any],
+    *,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+) -> dict[str, Any]:
+    """Synchronous wrapper for CLI and notebook-style callers."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            hydrate_raw_setup_account_state(
+                raw_setup,
+                platform_state_client=platform_state_client,
+                state_manager=state_manager,
+            )
+        )
+    raise RuntimeError(
+        "hydrate_raw_setup_account_state_sync() cannot be used inside an active event loop. "
+        "Use hydrate_raw_setup_account_state() instead."
+    )
+
+
+def _map_scanner_regime_to_trade_bias(regime: str) -> tuple[Literal["BUY", "SELL", "PASS"], str]:
+    """Translate Phase 2 scanner regime labels into the supervisor's direction/regime fields."""
+    normalized = str(regime).strip().upper()
+    if normalized == "BULLISH":
+        return "BUY", "RISK_ON"
+    if normalized == "BEARISH":
+        return "SELL", "RISK_OFF"
+    return "PASS", "NEUTRAL"
+
+
+def phase2_scanner_setup_to_raw_setup(
+    scanner_setup: dict[str, Any],
+    *,
+    account_state: AccountStateContext | None = None,
+) -> dict[str, Any]:
+    """
+    Adapt one Phase 2 MarketScanner row into the LangGraph scanner payload contract.
+
+    The adapter preserves richer structural fields when the scanner emits them and
+    records exactly which fields had to be inferred when they are absent.
+    """
+    setup = Phase2ScannerSetup.model_validate(scanner_setup)
+    setup_direction, benchmark_regime_status = _map_scanner_regime_to_trade_bias(setup.regime)
+    account_context = account_state or AccountStateContext()
+
+    inferred_fields: list[str] = []
+    if "fibonacci_convergence_proximity" not in setup.model_fields_set:
+        inferred_fields.append("fibonacci_convergence_proximity")
+    if "ema_cluster_distance" not in setup.model_fields_set:
+        inferred_fields.append("ema_cluster_distance")
+    if "setup_quality" not in setup.model_fields_set:
+        inferred_fields.append("setup_quality")
+
+    default_tags = [
+        "scanner_structural_confluence",
+        f"scanner_regime_{str(setup.regime).strip().lower()}",
+    ]
+    scanner_metadata = dict(setup.scanner_metadata)
+    scanner_metadata.update(
+        {
+            "source": "phase2_market_scanner",
+            "phase2_symbol": setup.symbol,
+            "phase2_regime": setup.regime,
+            "phase2_atr": setup.atr,
+            "adapted_for_langgraph": True,
+            "inferred_fields": inferred_fields,
+        }
+    )
+
+    rationale = setup.rationale or (
+        "Phase 2 MarketScanner supplied a regime-aligned setup with current price and ATR. "
+        "Additional structural fields are temporarily adapter defaults until the scanner is upgraded."
+    )
+
+    return ScannerRawSetup(
+        asset_ticker=setup.symbol,
+        setup_direction=setup_direction,
+        timeframe=setup.timeframe,
+        benchmark_regime_status=benchmark_regime_status,
+        current_price=setup.current_price,
+        localized_atr=setup.atr,
+        fibonacci_convergence_proximity=setup.fibonacci_convergence_proximity,
+        ema_cluster_distance=setup.ema_cluster_distance,
+        setup_quality=setup.setup_quality,
+        rationale=rationale,
+        narrative_tags=list(dict.fromkeys(default_tags + list(setup.narrative_tags))),
+        candidate_portfolio=[],
+        portfolio_expectancy=0.0,
+        portfolio_max_dd_pct=0.0,
+        portfolio_consistency_score=0.0,
+        portfolio_overall_survival=False,
+        scanner_metadata=scanner_metadata,
+        tokenomics_watch=setup.tokenomics_watch,
+        account_state=account_context,
+    ).model_dump()
+
+
+async def fetch_phase2_scanner_setups(
+    *,
+    scanner: Any | None = None,
+    watchlist: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Run the existing Phase 2 scanner and normalize its output rows."""
+    runtime_scanner = scanner
+    if runtime_scanner is None:
+        try:
+            from data.scanner import MarketScanner
+        except ImportError as exc:  # pragma: no cover - depends on optional runtime env
+            raise ImportError(
+                "Phase 2 scanner dependencies are not installed in this environment. "
+                "Install the trading stack or inject a scanner instance."
+            ) from exc
+        runtime_scanner = MarketScanner(watchlist or settings.WATCHLIST)
+
+    if not hasattr(runtime_scanner, "run_scan"):
+        raise TypeError("The supplied scanner does not expose a run_scan() method.")
+
+    raw_rows = await _maybe_await(runtime_scanner.run_scan())
+    if not raw_rows:
+        return []
+    return [Phase2ScannerSetup.model_validate(row).model_dump() for row in raw_rows]
+
+
+async def build_raw_setups_from_market_scan(
+    *,
+    scanner: Any | None = None,
+    watchlist: list[str] | None = None,
+    hydrate_account_state: bool = False,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Convert Phase 2 scanner output rows into LangGraph-ready scanner payloads.
+
+    Account hydration is computed once and reused across the converted setups.
+    """
+    scanner_rows = await fetch_phase2_scanner_setups(scanner=scanner, watchlist=watchlist)
+    if limit is not None:
+        scanner_rows = scanner_rows[: max(0, int(limit))]
+
+    account_state: AccountStateContext | None = None
+    if hydrate_account_state:
+        account_state = await hydrate_account_state_context(
+            platform_state_client=platform_state_client,
+            state_manager=state_manager,
+        )
+
+    raw_setups: list[dict[str, Any]] = []
+    for scanner_row in scanner_rows:
+        raw_setup = phase2_scanner_setup_to_raw_setup(scanner_row, account_state=account_state)
+        if hydrate_account_state:
+            raw_setup["scanner_metadata"]["account_hydration_source"] = account_state.source if account_state else "fallback_default"
+        raw_setups.append(raw_setup)
+    return raw_setups
+
+
+def build_raw_setups_from_market_scan_sync(
+    *,
+    scanner: Any | None = None,
+    watchlist: list[str] | None = None,
+    hydrate_account_state: bool = False,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Synchronous wrapper for converting live scanner output into graph inputs."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            build_raw_setups_from_market_scan(
+                scanner=scanner,
+                watchlist=watchlist,
+                hydrate_account_state=hydrate_account_state,
+                platform_state_client=platform_state_client,
+                state_manager=state_manager,
+                limit=limit,
+            )
+        )
+    raise RuntimeError(
+        "build_raw_setups_from_market_scan_sync() cannot be used inside an active event loop. "
+        "Use build_raw_setups_from_market_scan() instead."
+    )
 
 
 def build_initial_state(raw_setup: dict[str, Any]) -> TradeState:
@@ -814,6 +1422,7 @@ def build_initial_state(raw_setup: dict[str, Any]) -> TradeState:
         tool_results=[],
         specialist_reports=[],
         errors=[],
+        risk_guardrails_result={},
         schema_version="trade_oracle.phase1.v1",
         thread_metadata={"source": "scanner", "architecture_phase": "phase_1"},
     )
@@ -825,7 +1434,7 @@ def make_intent_router_node(
 ) -> Any:
     """Blueprint Section 3: Intent Router as the central supervisor."""
 
-    def intent_router_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def intent_router_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
         structured_model = model_registry.build_gemini_structured_model(IntentRouterPlan)
         plan: IntentRouterPlan | None = None
@@ -868,11 +1477,11 @@ def make_intent_router_node(
 def make_macro_liquidity_analyst_node(tool_stubs: dict[str, Any], model_registry: TradeOracleModelRegistry) -> Any:
     """Blueprint Section 3: Macro-Liquidity Analyst."""
 
-    def macro_liquidity_analyst_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def macro_liquidity_analyst_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
         tool_payload = _tool_payload_from_setup(setup)
         tool_result = invoke_tool_stub(tool_stubs, "macro_snapshot", tool_payload)
-        report = _deterministic_macro_report(setup)
+        report = _macro_report_from_tool_result(setup, tool_result)
 
         structured_model = model_registry.build_deepseek_structured_model(MacroLiquidityReport)
         if structured_model is not None:
@@ -888,6 +1497,7 @@ def make_macro_liquidity_analyst_node(tool_stubs: dict[str, Any], model_registry
             macro_summary=report.macro_summary,
             completed_agents=[MACRO_LIQUIDITY_ANALYST_NODE],
             tool_results=[tool_result],
+            errors=_tool_error_rows(MACRO_LIQUIDITY_ANALYST_NODE, tool_result),
             specialist_reports=[_report_row(MACRO_LIQUIDITY_ANALYST_NODE, report)],
             audit_trail=["Macro-Liquidity Analyst completed."],
             messages=[as_message("ai", report.macro_summary)],
@@ -904,11 +1514,11 @@ def make_fundamental_narrative_specialist_node(
 ) -> Any:
     """Blueprint Section 3: Fundamental Narrative Specialist."""
 
-    def fundamental_narrative_specialist_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def fundamental_narrative_specialist_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
         tool_payload = _tool_payload_from_setup(setup)
         tool_result = invoke_tool_stub(tool_stubs, "fundamental_snapshot", tool_payload)
-        report = _deterministic_fundamental_report(setup)
+        report = _fundamental_report_from_tool_result(setup, tool_result)
         structured_model = model_registry.build_gemini_structured_model(FundamentalNarrativeReport)
         if structured_model is not None:
             try:
@@ -924,11 +1534,10 @@ def make_fundamental_narrative_specialist_node(
             fundamental_summary=report.fundamental_summary,
             completed_agents=[FUNDAMENTAL_NARRATIVE_SPECIALIST_NODE],
             tool_results=[tool_result],
+            errors=_tool_error_rows(FUNDAMENTAL_NARRATIVE_SPECIALIST_NODE, tool_result),
             specialist_reports=[_report_row(FUNDAMENTAL_NARRATIVE_SPECIALIST_NODE, report)],
             audit_trail=["Fundamental Narrative Specialist completed."],
             messages=[as_message("ai", report.fundamental_summary)],
-            last_model_provider="google_ai_studio" if structured_model is not None else "deterministic_fallback",
-            last_model_name=model_registry.gemini_router.model if structured_model is not None else "fundamental_placeholder",
         )
 
     return fundamental_narrative_specialist_node
@@ -940,11 +1549,11 @@ def make_tokenomics_auditor_node(
 ) -> Any:
     """Blueprint Section 3: Tokenomics and On-Chain Auditor."""
 
-    def tokenomics_auditor_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def tokenomics_auditor_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
         tool_payload = _tool_payload_from_setup(setup)
         tool_result = invoke_tool_stub(tool_stubs, "tokenomics_snapshot", tool_payload)
-        report = _deterministic_tokenomics_report(setup)
+        report = _tokenomics_report_from_tool_result(setup, tool_result)
         structured_model = model_registry.build_gemini_structured_model(TokenomicsAuditReport)
         if structured_model is not None:
             try:
@@ -959,11 +1568,10 @@ def make_tokenomics_auditor_node(
             tokenomics_summary=report.tokenomics_summary,
             completed_agents=[TOKENOMICS_AUDITOR_NODE],
             tool_results=[tool_result],
+            errors=_tool_error_rows(TOKENOMICS_AUDITOR_NODE, tool_result),
             specialist_reports=[_report_row(TOKENOMICS_AUDITOR_NODE, report)],
             audit_trail=["Tokenomics Auditor completed."],
             messages=[as_message("ai", report.tokenomics_summary)],
-            last_model_provider="google_ai_studio" if structured_model is not None else "deterministic_fallback",
-            last_model_name=model_registry.gemini_router.model if structured_model is not None else "tokenomics_placeholder",
         )
 
     return tokenomics_auditor_node
@@ -975,11 +1583,11 @@ def make_technical_confluence_validator_node(
 ) -> Any:
     """Blueprint Section 3: Technical Confluence Validator."""
 
-    def technical_confluence_validator_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def technical_confluence_validator_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
         tool_payload = _tool_payload_from_setup(setup)
         tool_result = invoke_tool_stub(tool_stubs, "technical_snapshot", tool_payload)
-        report = _deterministic_technical_report(setup)
+        report = _technical_report_from_tool_result(setup, tool_result)
         structured_model = model_registry.build_gemini_structured_model(TechnicalConfluenceReport)
         if structured_model is not None:
             try:
@@ -994,11 +1602,10 @@ def make_technical_confluence_validator_node(
             technical_summary=report.technical_summary,
             completed_agents=[TECHNICAL_CONFLUENCE_VALIDATOR_NODE],
             tool_results=[tool_result],
+            errors=_tool_error_rows(TECHNICAL_CONFLUENCE_VALIDATOR_NODE, tool_result),
             specialist_reports=[_report_row(TECHNICAL_CONFLUENCE_VALIDATOR_NODE, report)],
             audit_trail=["Technical Confluence Validator completed."],
             messages=[as_message("ai", report.technical_summary)],
-            last_model_provider="google_ai_studio" if structured_model is not None else "deterministic_fallback",
-            last_model_name=model_registry.gemini_router.model if structured_model is not None else "technical_placeholder",
         )
 
     return technical_confluence_validator_node
@@ -1007,9 +1614,9 @@ def make_technical_confluence_validator_node(
 def make_devils_advocate_node(model_registry: TradeOracleModelRegistry) -> Any:
     """Blueprint Section 3: Devil's Advocate / Red Teamer."""
 
-    def devils_advocate_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def devils_advocate_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
-        report = _deterministic_devils_advocate_report(setup)
+        report = _deterministic_devils_advocate_report(setup, state)
         structured_model = model_registry.build_deepseek_structured_model(DevilsAdvocateReport)
         if structured_model is not None:
             try:
@@ -1040,7 +1647,7 @@ def make_reserved_specialist_node() -> Any:
     preserves a clean extension point without inventing undocumented behavior.
     """
 
-    def reserved_specialist_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def reserved_specialist_node(state: TradeState) -> TradeState:
         return TradeState(
             reserved_specialist_output="Reserved specialist slot not yet specified in the blueprint.",
             completed_agents=[RESERVED_SPECIALIST_NODE],
@@ -1051,10 +1658,10 @@ def make_reserved_specialist_node() -> Any:
     return reserved_specialist_node
 
 
-def make_pydantic_json_gatekeeper_node(model_registry: TradeOracleModelRegistry) -> Any:
+def make_pydantic_json_gatekeeper_node(tool_stubs: dict[str, Any], model_registry: TradeOracleModelRegistry) -> Any:
     """Blueprint Section 3: terminal structured-output gatekeeper with interrupt()."""
 
-    def pydantic_json_gatekeeper_node(state: TradeState, config: RunnableConfig | None = None) -> TradeState:
+    def pydantic_json_gatekeeper_node(state: TradeState) -> TradeState:
         setup = _state_setup(state)
         macro_score = float(state.get("macro_score", 0.0))
         fundamental_clearance = bool(state.get("fundamental_clearance", True))
@@ -1087,6 +1694,8 @@ def make_pydantic_json_gatekeeper_node(model_registry: TradeOracleModelRegistry)
             risk_budget_usd=settings.RISK_AMOUNT_USD,
             leverage_cap=settings.MAX_CRYPTO_LEVERAGE,
             consistency_rule_limit=0.20,
+            risk_guardrails={},
+            position_sizing={},
             execution_ready=default_decision in {"BUY", "SELL"},
             execution_status="pending_human_review" if default_decision in {"BUY", "SELL"} else "pass",
             operator_notes="",
@@ -1108,8 +1717,49 @@ def make_pydantic_json_gatekeeper_node(model_registry: TradeOracleModelRegistry)
         execution_ready = final_output.execution_ready
         execution_status = final_output.execution_status
         operator_notes = final_output.operator_notes
+        risk_tool_result: dict[str, Any] = {}
+        risk_guardrails_result: dict[str, Any] = cast(dict[str, Any], state.get("risk_guardrails_result", {}))
+        gatekeeper_errors: list[dict[str, Any]] = []
 
         if final_output.execution_ready:
+            risk_tool_result = invoke_tool_stub(
+                tool_stubs,
+                "risk_guardrails",
+                _risk_guardrails_payload_from_setup(setup),
+            )
+            risk_guardrails_result = {
+                "status": risk_tool_result.get("status", ""),
+                "detail": risk_tool_result.get("detail", ""),
+                "result": risk_tool_result.get("result", {}),
+                "error": risk_tool_result.get("error", {}),
+                "meta": risk_tool_result.get("meta", {}),
+            }
+            gatekeeper_errors = _tool_error_rows(PYDANTIC_JSON_GATEKEEPER_NODE, risk_tool_result)
+            risk_result = cast(dict[str, Any], risk_tool_result.get("result", {}))
+            can_open_new_trade = bool(risk_result.get("can_open_new_trade", False))
+            position_size = cast(dict[str, Any] | None, risk_result.get("position_size"))
+            risk_reason = ""
+
+            if str(risk_tool_result.get("status", "")).lower() == "error":
+                risk_reason = "Risk guardrails were unavailable, so execution was downgraded to PASS."
+            elif not can_open_new_trade:
+                risk_reason = "Risk guardrails rejected the trade due to concurrency or drawdown protection."
+            elif not position_size:
+                risk_reason = "Risk guardrails could not produce a position size for this setup."
+
+            if risk_reason:
+                execution_ready = False
+                execution_status = "pass"
+                operator_notes = risk_reason
+
+            final_output = final_output.model_copy(
+                update={
+                    "risk_guardrails": risk_result,
+                    "position_sizing": position_size or {},
+                }
+            )
+
+        if execution_ready:
             review_payload = _build_review_payload(state, final_output)
             interrupt_payload = review_payload
             if state.get("human_decision"):
@@ -1148,13 +1798,16 @@ def make_pydantic_json_gatekeeper_node(model_registry: TradeOracleModelRegistry)
 
         return TradeState(
             final_decision=finalized.model_dump(),
+            risk_guardrails_result=risk_guardrails_result,
             execution_ready=execution_ready,
-            review_required=final_output.execution_ready,
+            review_required=execution_status == "pending_human_review",
             review_context=interrupt_payload,
             human_decision=human_decision_row,
             interrupt_payload=interrupt_payload,
             halt_reason=halt_reason,
             gatekeeper_status="finalized",
+            tool_results=[risk_tool_result] if risk_tool_result else [],
+            errors=gatekeeper_errors,
             audit_trail=["Pydantic JSON Gatekeeper completed."],
             messages=[as_message("ai", json.dumps(finalized.model_dump(), indent=2))],
             last_model_provider="google_ai_studio" if structured_model is not None else "deterministic_fallback",
@@ -1193,12 +1846,20 @@ def build_trade_oracle_graph(
     *,
     enable_live_llm: bool = False,
     include_reserved_specialist: bool = False,
+    mcp_service_base_url: str | None = None,
+    mcp_http_client: TradeOracleMCPHttpClient | None = None,
 ) -> Any:
     """
     Build and compile the Phase 1 supervisor graph with durable SQLite state.
 
     Blueprint Section 5 explicitly calls for a StateGraph, add_conditional_edges,
     dummy specialist nodes for payload traversal, and persistent memory.
+
+    Production trigger path:
+    - n8n should call the FastAPI webhook layer.
+    - The FastAPI layer should normalize scanner/account payloads into TradeState.
+    - This graph should pause at interrupt() for OpenClaw approval and resume from
+      the same checkpointer-backed thread id.
     """
     ensure_langgraph_dependencies()
 
@@ -1207,7 +1868,10 @@ def build_trade_oracle_graph(
     connection = sqlite3.connect(str(sqlite_path), check_same_thread=False)
     checkpointer = SqliteSaver(connection)
 
-    tool_stubs = build_mcp_tool_stubs()
+    tool_stubs = build_mcp_tool_stubs(
+        service_base_url=mcp_service_base_url,
+        mcp_http_client=mcp_http_client,
+    )
     model_registry = TradeOracleModelRegistry(enable_live_llm=enable_live_llm)
     retry_policy = RetryPolicy(max_attempts=3) if RetryPolicy is not None else None
 
@@ -1247,7 +1911,7 @@ def build_trade_oracle_graph(
     )
     graph_builder.add_node(
         PYDANTIC_JSON_GATEKEEPER_NODE,
-        make_pydantic_json_gatekeeper_node(model_registry),
+        make_pydantic_json_gatekeeper_node(tool_stubs, model_registry),
     )
 
     if include_reserved_specialist:
@@ -1332,6 +1996,12 @@ def example_raw_setup_from_final_3pair() -> dict[str, Any]:
             "same_symbol_same_side_stacking": True,
         },
         tokenomics_watch={"dilutive_event_within_days": 45, "major_unlock_flag": False},
+        account_state={
+            "current_balance": 5100.0,
+            "highest_equity": 5150.0,
+            "active_trades_count": 1,
+            "source": "phase1_demo",
+        },
     ).model_dump()
 
 
@@ -1340,6 +2010,12 @@ def run_phase1_demo(
     *,
     checkpointer_path: str | Path = DEFAULT_CHECKPOINTER_PATH,
     enable_live_llm: bool = False,
+    hydrate_account_state: bool = False,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+    thread_id: str | None = None,
+    mcp_service_base_url: str | None = None,
+    mcp_http_client: TradeOracleMCPHttpClient | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """
     Minimal demo runner for the Phase 1 graph.
@@ -1352,10 +2028,19 @@ def run_phase1_demo(
     graph = build_trade_oracle_graph(
         checkpointer_path=checkpointer_path,
         enable_live_llm=enable_live_llm,
+        mcp_service_base_url=mcp_service_base_url,
+        mcp_http_client=mcp_http_client,
     )
-    state = build_initial_state(raw_setup or example_raw_setup_from_final_3pair())
+    prepared_raw_setup = raw_setup or example_raw_setup_from_final_3pair()
+    if hydrate_account_state:
+        prepared_raw_setup = hydrate_raw_setup_account_state_sync(
+            prepared_raw_setup,
+            platform_state_client=platform_state_client,
+            state_manager=state_manager,
+        )
+    state = build_initial_state(prepared_raw_setup)
     config = {
-        "configurable": {"thread_id": "trade-oracle-phase1-demo"},
+        "configurable": {"thread_id": thread_id or f"trade-oracle-phase1-demo-{uuid4().hex}"},
         "max_concurrency": 3,
     }
 
@@ -1369,9 +2054,59 @@ def run_phase1_demo(
     return cast(dict[str, Any], first_result), cast(dict[str, Any] | None, final_result)
 
 
+def run_phase1_demo_from_scanner(
+    *,
+    scanner: Any | None = None,
+    watchlist: list[str] | None = None,
+    scanner_setup_index: int = 0,
+    scanner_limit: int | None = None,
+    checkpointer_path: str | Path = DEFAULT_CHECKPOINTER_PATH,
+    enable_live_llm: bool = False,
+    hydrate_account_state: bool = False,
+    platform_state_client: Any | None = None,
+    state_manager: Any | None = None,
+    thread_id: str | None = None,
+    mcp_service_base_url: str | None = None,
+    mcp_http_client: TradeOracleMCPHttpClient | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """
+    Run the Phase 1 graph against one selected setup from the Phase 2 scanner.
+
+    Returns the selected raw_setup plus the first/final LangGraph passes.
+    """
+    raw_setups = build_raw_setups_from_market_scan_sync(
+        scanner=scanner,
+        watchlist=watchlist,
+        hydrate_account_state=hydrate_account_state,
+        platform_state_client=platform_state_client,
+        state_manager=state_manager,
+        limit=scanner_limit,
+    )
+    if not raw_setups:
+        raise ValueError("The Phase 2 scanner returned no valid setups.")
+    if scanner_setup_index < 0 or scanner_setup_index >= len(raw_setups):
+        raise IndexError(
+            f"scanner_setup_index={scanner_setup_index} is out of range for {len(raw_setups)} adapted setup(s)."
+        )
+
+    selected_setup = raw_setups[scanner_setup_index]
+    first_pass, final_pass = run_phase1_demo(
+        raw_setup=selected_setup,
+        checkpointer_path=checkpointer_path,
+        enable_live_llm=enable_live_llm,
+        hydrate_account_state=False,
+        thread_id=thread_id,
+        mcp_service_base_url=mcp_service_base_url,
+        mcp_http_client=mcp_http_client,
+    )
+    return selected_setup, first_pass, final_pass
+
+
 __all__ = [
     "TradeState",
+    "AccountStateContext",
     "FinalPairContext",
+    "Phase2ScannerSetup",
     "ScannerRawSetup",
     "IntentRouterPlan",
     "HumanReviewDecision",
@@ -1382,12 +2117,21 @@ __all__ = [
     "TechnicalConfluenceReport",
     "DevilsAdvocateReport",
     "build_initial_state",
+    "hydrate_account_state_context",
+    "hydrate_raw_setup_account_state",
+    "hydrate_raw_setup_account_state_sync",
+    "phase2_scanner_setup_to_raw_setup",
+    "fetch_phase2_scanner_setups",
+    "build_raw_setups_from_market_scan",
+    "build_raw_setups_from_market_scan_sync",
     "build_mcp_tool_stubs",
     "build_default_route_batches",
     "route_from_intent_router",
     "build_trade_oracle_graph",
+    "TradeOracleMCPHttpClient",
     "example_raw_setup_from_final_3pair",
     "run_phase1_demo",
+    "run_phase1_demo_from_scanner",
 ]
 
 
