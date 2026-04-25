@@ -71,6 +71,7 @@ def build_trade_oracle_platform_app(
     phase2_scanner_runner: Callable[[list[str]], Awaitable[list[dict[str, Any]]]] | None = None,
     live_scanner_runner: Callable[[LiveScannerRequest], Awaitable[dict[str, Any]]] | None = None,
     match_trader_api_cls: type[Any] | None = None,
+    mt5_bridge_cls: type[Any] | None = None,
 ) -> FastAPI:
     """Create the single FastAPI deployment surface for the LangGraph stack."""
 
@@ -111,6 +112,7 @@ def build_trade_oracle_platform_app(
         phase2_scanner_runner=phase2_scanner_runner,
         live_scanner_runner=live_scanner_runner,
         match_trader_api_cls=match_trader_api_cls,
+        mt5_bridge_cls=mt5_bridge_cls,
     )
     auxiliary_mcp_app = build_trade_oracle_mcp_app(
         require_auth=resolved_require_auth,
@@ -189,7 +191,9 @@ def build_trade_oracle_platform_app(
                     "routes": {
                         "phase2_scanner": "/services/ops/ops/scanner/phase2/run",
                         "live_scanner": "/services/ops/ops/scanner/live/run",
+                        "account_state": "/services/ops/ops/account/state",
                         "risk_evaluate": "/services/ops/ops/risk/evaluate",
+                        "execution_symbol_status": "/services/ops/ops/execution/symbol-status",
                         "execution_platform_details": "/services/ops/ops/execution/platform-details",
                         "execution_transmit_limit_order": "/services/ops/ops/execution/transmit-limit-order",
                     },

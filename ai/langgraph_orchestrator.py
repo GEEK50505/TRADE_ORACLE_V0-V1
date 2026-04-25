@@ -39,6 +39,7 @@ class LangGraphExecutionCandidate(BaseModel):
     size_tokens: float = 0.0
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     execution_status: str
+    execution_tp_mode: str = ""
     review_required: bool = False
     rationale: str = ""
     position_sizing: dict[str, Any] = Field(default_factory=dict)
@@ -66,6 +67,22 @@ class LangGraphEvaluationResult(BaseModel):
     errors: list[dict[str, Any]] = Field(default_factory=list)
     thread_metadata: dict[str, Any] = Field(default_factory=dict)
     candidate: LangGraphExecutionCandidate | None = None
+
+
+def resolve_live_take_profit(position_sizing: dict[str, Any]) -> tuple[float, str]:
+    """Resolve the live-demo take-profit target from the configured execution policy."""
+
+    tp_mode = str(settings.TRADE_ORACLE_LIVE_TP_MODE).strip().lower()
+    tp1 = float(position_sizing.get("tp1", 0.0) or 0.0)
+    tp2 = float(position_sizing.get("tp2", 0.0) or 0.0)
+
+    if tp_mode == "tp2_full" and tp2 > 0.0:
+        return tp2, "tp2_full"
+    if tp1 > 0.0:
+        return tp1, "tp1_only"
+    if tp2 > 0.0:
+        return tp2, "tp2_full"
+    return 0.0, "unresolved"
 
 
 @dataclass(slots=True)
@@ -191,6 +208,7 @@ class LangGraphSupervisorOrchestrator:
         execution_status = str(final_decision.get("execution_status", "pass"))
         position_sizing = dict(final_decision.get("position_sizing", {}))
         execute_trade = decision in {"BUY", "SELL"} and execution_status == "approved"
+        take_profit, execution_tp_mode = resolve_live_take_profit(position_sizing)
 
         return LangGraphExecutionCandidate(
             execute_trade=execute_trade,
@@ -198,10 +216,11 @@ class LangGraphSupervisorOrchestrator:
             direction="BUY" if decision == "BUY" else "SELL",
             entry_price=float(position_sizing.get("entry_price", raw_setup.get("current_price", 0.0))),
             stop_loss=float(position_sizing.get("stop_loss", 0.0)),
-            take_profit=float(position_sizing.get("tp1", 0.0)),
+            take_profit=take_profit,
             size_tokens=float(position_sizing.get("tokens", 0.0)),
             confidence=float(final_decision.get("confidence", 0.0)),
             execution_status=execution_status,
+            execution_tp_mode=execution_tp_mode,
             review_required=bool(result.get("review_required", interrupted and not execute_trade)),
             rationale=str(final_decision.get("entry_context", "")),
             position_sizing=position_sizing,

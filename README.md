@@ -109,6 +109,21 @@ curl -X POST http://127.0.0.1:8020/ops/execution/transmit-limit-order `
   -d "{\"broker_id\":\"<broker>\",\"email\":\"<user>\",\"password\":\"<pass>\",\"base_url\":\"https://mtr-api.match-trader.com\",\"system_uuid\":\"<system>\",\"symbol\":\"AVAX/USDT\",\"direction\":\"BUY\",\"size\":4.93827,\"limit_price\":41.25,\"stop_loss\":39.225,\"take_profit\":43.95}"
 ```
 
+MetaTrader 5 execution bridge over HTTP:
+
+```powershell
+curl -X POST http://127.0.0.1:8020/ops/execution/transmit-limit-order `
+  -H "Content-Type: application/json" `
+  -d "{\"execution_backend\":\"mt5\",\"mt5_login\":\"<login>\",\"mt5_password\":\"<password>\",\"mt5_server\":\"<server>\",\"mt5_terminal_path\":\"C:\\\\Program Files\\\\MetaTrader 5\\\\terminal64.exe\",\"symbol\":\"AVAX/USDT\",\"direction\":\"BUY\",\"size\":4.93827,\"size_mode\":\"units\",\"limit_price\":41.25,\"stop_loss\":39.225,\"take_profit\":43.95}"
+```
+
+For MT5, `size_mode` supports:
+
+- `units`
+  The default. Treat `size` as strategy asset units/tokens and convert to broker volume using the MT5 symbol contract size.
+- `broker_volume`
+  Use `size` as a raw MT5 lot/volume value. This is intended for deliberate mechanics-only tests.
+
 The thin n8n webhook contract lives in [contracts/trade_oracle_n8n_workflow_contract.json](contracts/trade_oracle_n8n_workflow_contract.json).
 
 The platform service exposes deployment-aware discovery endpoints:
@@ -131,9 +146,21 @@ curl -X POST http://127.0.0.1:8000/superbrain/run-once `
 Optional auxiliary service calls through the same platform container:
 
 ```powershell
+curl -X POST http://127.0.0.1:8000/services/ops/ops/account/state `
+  -H "Content-Type: application/json" `
+  -d "{\"broker_id\":\"<broker>\",\"email\":\"<user>\",\"password\":\"<pass>\",\"base_url\":\"https://mtr-api.match-trader.com\",\"system_uuid\":\"<system>\"}"
+```
+
+```powershell
 curl -X POST http://127.0.0.1:8000/services/ops/ops/risk/evaluate `
   -H "Content-Type: application/json" `
   -d "{\"current_balance\":5100.0,\"highest_equity\":5150.0,\"active_trades_count\":1,\"entry_price\":41.25,\"atr\":1.35,\"direction\":\"BUY\"}"
+```
+
+```powershell
+curl -X POST http://127.0.0.1:8000/services/ops/ops/execution/symbol-status `
+  -H "Content-Type: application/json" `
+  -d "{\"execution_backend\":\"mt5\",\"mt5_login\":\"<login>\",\"mt5_password\":\"<password>\",\"mt5_server\":\"<server>\",\"mt5_terminal_path\":\"C:\\\\Program Files\\\\MetaTrader 5\\\\terminal64.exe\",\"mt5_symbol_map\":{\"BTC/USDT\":\"BTC\",\"ETH/USDT\":\"ETH\",\"SOL/USDT\":\"SOL\",\"XRP/USDT\":\"XXRP\"},\"symbol\":\"XRP/USDT\"}"
 ```
 
 ```powershell
@@ -159,6 +186,95 @@ Optional platform audit persistence path:
 ```powershell
 $env:TRADE_ORACLE_AUDIT_DB_PATH = "results/trade_oracle_audit.sqlite"
 ```
+
+Execution backend selection:
+
+```powershell
+$env:TRADE_ORACLE_EXECUTION_BACKEND = "match_trader"
+```
+
+Supported values:
+
+- `match_trader`
+- `mt5`
+
+Optional MT5 execution env vars:
+
+```powershell
+$env:MT5_LOGIN = "<login>"
+$env:MT5_PASSWORD = "<password>"
+$env:MT5_SERVER = "<server>"
+$env:MT5_TERMINAL_PATH = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+$env:MT5_SYMBOL_SUFFIX = ""
+$env:MT5_SYMBOL_MAP = "{\"BTC/USDT\":\"BTC\",\"ETH/USDT\":\"ETH\",\"SOL/USDT\":\"SOL\",\"XRP/USDT\":\"XXRP\"}"
+```
+
+The MetaQuotes demo account validated so far supports the mapped symbols above.
+It does not currently expose `AVAX/USDT` or `DOGE/USDT` as quoted MT5 symbols on
+the tested server, so use `/services/ops/ops/execution/symbol-status` before any
+supervised demo transmit to confirm the exact broker-side symbol and live tick.
+
+FTMO MT5 demo prep:
+
+```powershell
+$env:TRADE_ORACLE_EXECUTION_BACKEND = "mt5"
+$env:MT5_LOGIN = "<ftmo-login>"
+$env:MT5_PASSWORD = "<ftmo-password>"
+$env:MT5_SERVER = "FTMO-Demo"
+$env:MT5_TERMINAL_PATH = "<path-to-ftmo-terminal64.exe>"
+$env:MT5_SYMBOL_MAP = "{\"AVAX/USDT\":\"AVAUSD\",\"DOGE/USDT\":\"DOGEUSD\"}"
+```
+
+Use the FTMO-provided MT5 terminal, log in manually once, and confirm the
+terminal is connected before running any TRADE_ORACLE checks. The exact FTMO
+crypto symbol names can vary by server, so treat the map above as a starting
+template and verify the real names inside MT5 `Market Watch -> Symbols`.
+
+On the FTMO demo environment validated so far, the visible crypto CFD symbols include:
+
+- `BTCUSD`
+- `ETHUSD`
+- `XRPUSD`
+- `SOLUSD`
+- `AVAUSD`
+- `DOGEUSD`
+
+Run the local preflight checker after setting the env vars:
+
+```powershell
+.venv-langgraph\Scripts\python.exe scripts\validate_mt5_demo_profile.py `
+  --symbols "AVAX/USDT,DOGE/USDT,BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT" `
+  --output results/ftmo_mt5_preflight.json
+```
+
+That script validates:
+
+- MT5 auth
+- live account oversight state
+- exact symbol resolution
+- quote / tick availability
+
+It does not transmit any orders.
+
+The FTMO MT5 path has now been validated end to end with:
+
+- real FTMO auth
+- live quote checks for `AVAUSD`, `DOGEUSD`, `BTCUSD`, `ETHUSD`, `SOLUSD`, `XRPUSD`
+- real `/superbrain/run-once`
+- real `/superbrain/review-resume`
+- real risk recheck
+- real broker-accepted pending orders on `AVAUSD`
+
+Explicit live-demo execution policy:
+
+```powershell
+$env:TRADE_ORACLE_LIVE_TP_MODE = "tp1_only"
+```
+
+Supported values:
+
+- `tp1_only`
+- `tp2_full`
 
 Optional MCP provider-layer controls for live specialist adapters:
 

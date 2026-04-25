@@ -3,7 +3,7 @@
 import asyncio
 from pathlib import Path
 
-from ai.langgraph_orchestrator import LangGraphSupervisorOrchestrator
+from ai.langgraph_orchestrator import LangGraphSupervisorOrchestrator, resolve_live_take_profit
 
 
 def test_langgraph_supervisor_orchestrator_returns_execution_candidate_when_auto_approved():
@@ -66,3 +66,25 @@ def test_langgraph_supervisor_orchestrator_returns_no_candidates_without_approva
     )
 
     assert candidates == []
+
+
+def test_resolve_live_take_profit_defaults_to_tp1(monkeypatch):
+    monkeypatch.setattr("config.settings.TRADE_ORACLE_LIVE_TP_MODE", "tp1_only")
+
+    take_profit, mode = resolve_live_take_profit(
+        {"tp1": 10.25, "tp2": 10.91}
+    )
+
+    assert take_profit == 10.25
+    assert mode == "tp1_only"
+
+
+def test_resolve_live_take_profit_can_switch_to_tp2(monkeypatch):
+    monkeypatch.setattr("config.settings.TRADE_ORACLE_LIVE_TP_MODE", "tp2_full")
+
+    take_profit, mode = resolve_live_take_profit(
+        {"tp1": 10.25, "tp2": 10.91}
+    )
+
+    assert take_profit == 10.91
+    assert mode == "tp2_full"

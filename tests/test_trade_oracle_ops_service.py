@@ -48,7 +48,7 @@ class _FakeMatchTraderAPI:
     async def get_platform_details(self):
         return {"equity": 5125.0, "active_trades": 1}
 
-    async def transmit_limit_order(self, symbol, direction, size, limit_price, stop_loss, take_profit):
+    async def transmit_limit_order(self, symbol, direction, size, limit_price, stop_loss, take_profit, size_mode="units"):
         return all(
             [
                 symbol,
@@ -59,6 +59,65 @@ class _FakeMatchTraderAPI:
                 take_profit > 0,
             ]
         )
+
+
+class _FakeStateManager:
+    def update_high_watermark(self, current_equity):
+        assert current_equity == 5125.0
+        return 5250.0
+
+
+class _FailingStateManager:
+    def __init__(self):
+        raise RuntimeError("Supabase unavailable for test")
+
+
+class _FakeMT5Bridge:
+    def __init__(self, *, login, password, server, terminal_path=None, symbol_suffix="", symbol_map=None):
+        self.login = int(login)
+        self.password = password
+        self.server = server
+        self.terminal_path = terminal_path or ""
+        self.symbol_suffix = symbol_suffix
+        self.symbol_map = symbol_map or {}
+
+    async def authenticate(self):
+        return True
+
+    async def get_platform_details(self):
+        return {"equity": 4988.0, "active_trades": 2}
+
+    async def transmit_limit_order(self, symbol, direction, size, limit_price, stop_loss, take_profit, size_mode="units"):
+        return all(
+            [
+                symbol,
+                direction in {"BUY", "SELL"},
+                size > 0,
+                limit_price > 0,
+                stop_loss > 0,
+                take_profit > 0,
+            ]
+        )
+
+    async def get_symbol_status(self, symbol):
+        resolved = self.symbol_map.get(symbol, symbol.replace("/", ""))
+        return {
+            "requested_symbol": symbol,
+            "resolved_symbol": resolved,
+            "authenticated": True,
+            "available": resolved in {"ETH", "SOL", "BTC", "XXRP"},
+            "selected": True,
+            "visible": True,
+            "trade_mode": 4,
+            "point": 0.01,
+            "bid": 100.0 if resolved in {"ETH", "SOL", "BTC", "XXRP"} else 0.0,
+            "ask": 101.0 if resolved in {"ETH", "SOL", "BTC", "XXRP"} else 0.0,
+            "last": 100.5 if resolved in {"ETH", "SOL", "BTC", "XXRP"} else 0.0,
+            "has_live_tick": resolved in {"ETH", "SOL", "BTC", "XXRP"},
+        }
+
+    async def shutdown(self):
+        return None
 
 
 def test_ops_service_phase2_scanner_endpoint_returns_setups():
@@ -177,3 +236,156 @@ def test_ops_service_execution_endpoints_use_match_trader_bridge():
     assert order_response.status_code == 200
     assert order_body["status"] == "ok"
     assert order_body["result"]["order_transmitted"] is True
+
+
+def test_ops_service_execution_endpoints_support_mt5_backend():
+    app = build_trade_oracle_ops_app(
+        require_auth=False,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        mt5_bridge_cls=_FakeMT5Bridge,
+    )
+    client = TestClient(app)
+
+    platform_response = client.post(
+        "/ops/execution/platform-details",
+        json={
+            "execution_backend": "mt5",
+            "mt5_login": 12345678,
+            "mt5_password": "secret",
+            "mt5_server": "Maven-Demo",
+            "mt5_terminal_path": "C:\\MT5\\terminal64.exe",
+            "mt5_symbol_suffix": "",
+        },
+    )
+    platform_body = platform_response.json()
+
+    assert platform_response.status_code == 200
+    assert platform_body["status"] == "ok"
+    assert platform_body["result"]["execution_backend"] == "mt5"
+    assert platform_body["result"]["platform_details"]["equity"] == 4988.0
+
+    order_response = client.post(
+        "/ops/execution/transmit-limit-order",
+        json={
+            "execution_backend": "mt5",
+            "mt5_login": 12345678,
+            "mt5_password": "secret",
+            "mt5_server": "Maven-Demo",
+            "mt5_terminal_path": "C:\\MT5\\terminal64.exe",
+            "symbol": "AVAX/USDT",
+            "direction": "BUY",
+            "size": 4.93827,
+            "limit_price": 41.25,
+            "stop_loss": 39.225,
+            "take_profit": 43.95,
+        },
+    )
+    order_body = order_response.json()
+
+    assert order_response.status_code == 200
+    assert order_body["status"] == "ok"
+    assert order_body["result"]["execution_backend"] == "mt5"
+    assert order_body["result"]["order_transmitted"] is True
+
+
+def test_ops_service_execution_symbol_status_supports_mt5_symbol_map():
+    app = build_trade_oracle_ops_app(
+        require_auth=False,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        mt5_bridge_cls=_FakeMT5Bridge,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/ops/execution/symbol-status",
+        json={
+            "execution_backend": "mt5",
+            "mt5_login": 12345678,
+            "mt5_password": "secret",
+            "mt5_server": "Maven-Demo",
+            "mt5_terminal_path": "C:\\MT5\\terminal64.exe",
+            "mt5_symbol_map": {
+                "ETH/USDT": "ETH",
+                "SOL/USDT": "SOL",
+                "XRP/USDT": "XXRP",
+            },
+            "symbol": "ETH/USDT",
+        },
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert body["result"]["execution_backend"] == "mt5"
+    assert body["result"]["symbol_status"]["resolved_symbol"] == "ETH"
+    assert body["result"]["symbol_status"]["available"] is True
+    assert body["result"]["symbol_status"]["has_live_tick"] is True
+
+
+def test_ops_service_account_state_endpoint_returns_drawdown_oversight(monkeypatch):
+    monkeypatch.setattr("config.settings.SUPABASE_URL", "https://supabase.example.test")
+    monkeypatch.setattr("config.settings.SUPABASE_KEY", "service-role-key")
+
+    app = build_trade_oracle_ops_app(
+        require_auth=False,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        match_trader_api_cls=_FakeMatchTraderAPI,
+        state_manager_factory=_FakeStateManager,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/ops/account/state",
+        json={
+            "broker_id": "broker",
+            "email": "user@example.com",
+            "password": "secret",
+            "base_url": "https://example.test",
+            "system_uuid": "SYSTEM_123",
+        },
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert body["result"]["current_equity"] == 5125.0
+    assert body["result"]["high_watermark"] == 5250.0
+    assert body["result"]["high_watermark_source"] == "supabase"
+    assert body["result"]["distance_to_failure_usd"] == 32.5
+    assert body["result"]["warning_buffer_triggered"] is False
+    assert body["result"]["can_open_new_trade"] is True
+
+
+def test_ops_service_account_state_endpoint_falls_back_when_state_store_unavailable(monkeypatch):
+    monkeypatch.setattr("config.settings.SUPABASE_URL", "https://supabase.example.test")
+    monkeypatch.setattr("config.settings.SUPABASE_KEY", "service-role-key")
+
+    app = build_trade_oracle_ops_app(
+        require_auth=False,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        match_trader_api_cls=_FakeMatchTraderAPI,
+        state_manager_factory=_FailingStateManager,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/ops/account/state",
+        json={
+            "broker_id": "broker",
+            "email": "user@example.com",
+            "password": "secret",
+            "base_url": "https://example.test",
+            "system_uuid": "SYSTEM_123",
+        },
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "ok"
+    assert body["result"]["high_watermark"] == 5125.0
+    assert body["result"]["high_watermark_source"] == "fallback_current_equity"
+    assert "Supabase unavailable for test" in body["result"]["fallback_reason"]

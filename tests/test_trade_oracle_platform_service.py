@@ -75,7 +75,7 @@ class _FakeMatchTraderAPI:
     async def get_platform_details(self):
         return {"equity": 5125.0, "active_trades": 1}
 
-    async def transmit_limit_order(self, symbol, direction, size, limit_price, stop_loss, take_profit):
+    async def transmit_limit_order(self, symbol, direction, size, limit_price, stop_loss, take_profit, size_mode="units"):
         return all(
             [
                 symbol,
@@ -109,6 +109,7 @@ def test_platform_service_exposes_capabilities_and_system_health():
     capabilities_body = capabilities_response.json()
     assert capabilities_response.status_code == 200
     assert capabilities_body["n8n_entrypoints"]["run_once"] == "/superbrain/run-once"
+    assert capabilities_body["mounted_services"]["ops"]["routes"]["account_state"] == "/services/ops/ops/account/state"
     assert capabilities_body["mounted_services"]["ops"]["routes"]["risk_evaluate"] == "/services/ops/ops/risk/evaluate"
     assert capabilities_body["n8n_entrypoints"]["audit_recent"] == "/system/audit/recent"
 
@@ -221,3 +222,107 @@ def test_platform_service_exposes_recent_and_thread_audit_history():
     assert thread_response.status_code == 200
     assert thread_body["count"] >= 1
     assert all(event["thread_id"] == thread_id for event in thread_body["events"])
+
+
+def test_platform_service_supports_prebroker_live_demo_chain(monkeypatch):
+    monkeypatch.setattr("config.settings.SUPABASE_URL", "")
+    monkeypatch.setattr("config.settings.SUPABASE_KEY", "")
+    monkeypatch.setattr("config.settings.TRADE_ORACLE_LIVE_TP_MODE", "tp1_only")
+
+    app = build_trade_oracle_platform_app(
+        require_auth=False,
+        checkpointer_path="results/test_trade_oracle_platform_demo.sqlite",
+        audit_db_path="results/test_trade_oracle_platform_demo_audit.sqlite",
+        scanner_runner=_fake_super_brain_scanner_runner,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        match_trader_api_cls=_FakeMatchTraderAPI,
+    )
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/superbrain/run-once",
+        json={
+            "watchlist": ["SOL/USDT"],
+            "scanner_limit": 1,
+            "account_state": {
+                "current_balance": 5200.0,
+                "highest_equity": 5300.0,
+                "active_trades_count": 1,
+            },
+            "auto_approve": False,
+        },
+    )
+    run_body = run_response.json()
+    assert run_response.status_code == 200
+    assert run_body["result"]["evaluations"][0]["status"] == "pending_review"
+
+    thread_id = run_body["result"]["evaluations"][0]["thread_id"]
+    resume_response = client.post(
+        "/superbrain/review-resume",
+        json={
+            "thread_id": thread_id,
+            "human_decision": {
+                "action": "APPROVE",
+                "reviewer": "pytest",
+                "notes": "Approve demo chain candidate.",
+            },
+        },
+    )
+    resume_body = resume_response.json()
+    assert resume_response.status_code == 200
+    candidate = resume_body["result"]["candidate"]
+    assert candidate["execute_trade"] is True
+    assert candidate["execution_status"] == "approved"
+    assert candidate["execution_tp_mode"] == "tp1_only"
+
+    account_state_response = client.post(
+        "/services/ops/ops/account/state",
+        json={
+            "broker_id": "broker",
+            "email": "user@example.com",
+            "password": "secret",
+            "base_url": "https://example.test",
+            "system_uuid": "SYSTEM_123",
+        },
+    )
+    account_state_body = account_state_response.json()
+    assert account_state_response.status_code == 200
+    assert account_state_body["result"]["high_watermark_source"] == "fallback_current_equity"
+    assert account_state_body["result"]["can_open_new_trade"] is True
+
+    risk_response = client.post(
+        "/services/ops/ops/risk/evaluate",
+        json={
+            "current_balance": 5200.0,
+            "highest_equity": 5300.0,
+            "active_trades_count": 1,
+            "entry_price": candidate["entry_price"],
+            "atr": resume_body["result"]["raw_setup"]["localized_atr"],
+            "direction": candidate["direction"],
+        },
+    )
+    risk_body = risk_response.json()
+    assert risk_response.status_code == 200
+    assert risk_body["result"]["can_open_new_trade"] is True
+    assert risk_body["result"]["position_size"]["tokens"] > 0
+
+    execution_response = client.post(
+        "/services/ops/ops/execution/transmit-limit-order",
+        json={
+            "broker_id": "broker",
+            "email": "user@example.com",
+            "password": "secret",
+            "base_url": "https://example.test",
+            "system_uuid": "SYSTEM_123",
+            "symbol": candidate["symbol"],
+            "direction": candidate["direction"],
+            "size": candidate["size_tokens"],
+            "limit_price": candidate["entry_price"],
+            "stop_loss": candidate["stop_loss"],
+            "take_profit": candidate["take_profit"],
+        },
+    )
+    execution_body = execution_response.json()
+    assert execution_response.status_code == 200
+    assert execution_body["result"]["order_transmitted"] is True

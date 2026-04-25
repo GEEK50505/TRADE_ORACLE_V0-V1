@@ -7,6 +7,7 @@ requests==2.31.0
 pydantic==2.12.5
 httpx==0.28.1
 pandas>=2.2.0
+MetaTrader5>=5.0.45; platform_system == "Windows"
 
 # LLM / orchestration stack
 openai==2.30.0

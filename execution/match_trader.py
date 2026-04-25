@@ -83,7 +83,7 @@ class MatchTraderAPI:
                         equity = data.get("account", {}).get("equity", 0.0)
                         
                         # Calculate current concurrency footprint
-                        open_positions = len(data.get("positions",))
+                        open_positions = len(data.get("positions", []) or [])
                         
                         return {"equity": float(equity), "active_trades": open_positions}
                     elif response.status == 429:
@@ -96,8 +96,16 @@ class MatchTraderAPI:
             self.logger.error(f"Exception encountered while fetching state: {e}")
             return None
 
-    async def transmit_limit_order(self, symbol: str, direction: str, size: float, 
-                                   limit_price: float, stop_loss: float, take_profit: float) -> bool:
+    async def transmit_limit_order(
+        self,
+        symbol: str,
+        direction: str,
+        size: float,
+        limit_price: float,
+        stop_loss: float,
+        take_profit: float,
+        size_mode: str = "units",
+    ) -> bool:
         """
         Constructs and routes a pending Limit Order payload to the execution server.
         Adheres strictly to the expected REST payload format for the /pending-order/create endpoint.
@@ -124,7 +132,13 @@ class MatchTraderAPI:
             async with aiohttp.ClientSession(headers=self.headers) as session:
                 async with session.post(endpoint, json=payload) as response:
                     if response.status in (200, 201):
-                        self.logger.info(f"Order Transmitted: {symbol} | Type: LIMIT | Vol: {size} | LMT: {limit_price}")
+                        self.logger.info(
+                            "Order Transmitted: %s | Type: LIMIT | Vol: %s | Mode: %s | LMT: %s",
+                            symbol,
+                            size,
+                            size_mode,
+                            limit_price,
+                        )
                         return True
                     else:
                         error_text = await response.text()

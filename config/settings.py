@@ -8,6 +8,7 @@ proprietary firm rules into strict numerical thresholds to prevent algorithmic f
 
 # config/settings.py
 import os
+import json
 from dotenv import load_dotenv
 
 # Initialize environmental variables for secure credential routing
@@ -97,3 +98,22 @@ MATCH_TRADER_BROKER_ID = os.getenv("MATCH_TRADER_BROKER_ID")
 
 # Fallback to the known production URL if the environment variable is missing
 MATCH_TRADER_BASE_URL = os.getenv("MATCH_TRADER_BASE_URL", "https://mtr-api.match-trader.com")
+
+# Phase 4 Execution Backend Selection
+# Keep Match-Trader as the operational default until the MT5 bridge is fully validated.
+TRADE_ORACLE_EXECUTION_BACKEND = os.getenv("TRADE_ORACLE_EXECUTION_BACKEND", "match_trader").strip().lower()
+
+# Phase 4 Alternative Execution Bridge (MetaTrader 5)
+MT5_LOGIN = os.getenv("MT5_LOGIN")
+MT5_PASSWORD = os.getenv("MT5_PASSWORD")
+MT5_SERVER = os.getenv("MT5_SERVER")
+MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
+MT5_SYMBOL_SUFFIX = os.getenv("MT5_SYMBOL_SUFFIX", "")
+try:
+    MT5_SYMBOL_MAP = json.loads(os.getenv("MT5_SYMBOL_MAP", "{}") or "{}")
+except json.JSONDecodeError:
+    MT5_SYMBOL_MAP = {}
+
+# Phase 4 Live Demo Execution Policy
+# Keep the first supervised live phase simple unless partial-close support is proven.
+TRADE_ORACLE_LIVE_TP_MODE = os.getenv("TRADE_ORACLE_LIVE_TP_MODE", "tp1_only").strip().lower()

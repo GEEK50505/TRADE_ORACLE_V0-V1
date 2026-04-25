@@ -4,8 +4,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ai.langgraph_orchestrator import LangGraphSupervisorOrchestrator
+from ai.langgraph_orchestrator import LangGraphSupervisorOrchestrator, resolve_live_take_profit
 from config import settings
+from execution.runtime import build_execution_client_from_settings, resolve_execution_backend
 from risk.manager import RiskManager
 
 # Configure the root logger for the entire autonomous pipeline
@@ -86,26 +87,35 @@ async def autonomous_execution_loop():
     logger.info("Initializing TRADE_ORACLE Phase 4 Autonomous Pipeline...")
 
     from data.scanner import MarketScanner
-    from execution.match_trader import MatchTraderAPI
     from journal.supabase_client import StateManager
 
     # -----------------------------------------------------------------------
     # 1. Platform Authentication and State Verification
     # -----------------------------------------------------------------------
-    trader_api = MatchTraderAPI(
-        broker_id=settings.MATCH_TRADER_BROKER_ID,
-        email=settings.MATCH_TRADER_USER,
-        password=settings.MATCH_TRADER_PASS,
-        base_url=settings.MATCH_TRADER_BASE_URL,
-    )
+    execution_backend = resolve_execution_backend()
+    try:
+        trader_api = build_execution_client_from_settings()
+    except (ImportError, ValueError) as exc:
+        logger.critical(
+            "Fatal Error: could not initialize the %s execution bridge. Details: %s",
+            execution_backend,
+            exc,
+        )
+        return
 
     if not await trader_api.authenticate():
-        logger.critical("Fatal Error: Authentication with Match-Trader failed. Terminating pipeline.")
+        logger.critical(
+            "Fatal Error: Authentication with %s failed. Terminating pipeline.",
+            execution_backend,
+        )
         return
 
     platform_data = await trader_api.get_platform_details()
     if not platform_data:
-        logger.error("Failed to retrieve platform state from the broker ledger. Halting to prevent state corruption.")
+        logger.error(
+            "Failed to retrieve platform state from the %s execution bridge. Halting to prevent state corruption.",
+            execution_backend,
+        )
         return
 
     current_live_equity = platform_data["equity"]
@@ -207,24 +217,37 @@ async def autonomous_execution_loop():
             continue
 
         logger.info(
-            "Calculated Parameters for %s: Vol=%s | TP1 Target=%s",
+            "Calculated Parameters for %s: Vol=%s | TP1 Target=%s | TP2 Target=%s",
             setup.symbol,
             execution_params["tokens"],
             execution_params["tp1"],
+            execution_params["tp2"],
+        )
+
+        live_take_profit, execution_tp_mode = resolve_live_take_profit(execution_params)
+        logger.info(
+            "Execution policy for %s resolved to %s with live take-profit %s.",
+            setup.symbol,
+            execution_tp_mode,
+            live_take_profit,
         )
 
         order_success = await trader_api.transmit_limit_order(
             symbol=setup.symbol,
             direction=setup.direction,
             size=execution_params["tokens"],
+            size_mode="units",
             limit_price=execution_params["entry_price"],
             stop_loss=execution_params["stop_loss"],
-            take_profit=execution_params["tp1"],
+            take_profit=live_take_profit,
         )
 
         if order_success:
             risk_engine.active_trades += 1
             logger.info("Order Successfully Transmitted. Portfolio Concurrency updated to: %s", risk_engine.active_trades)
+
+    if hasattr(trader_api, "shutdown"):
+        await trader_api.shutdown()
 
 
 if __name__ == "__main__":

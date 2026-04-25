@@ -5,6 +5,7 @@
 ccxt==4.2.14
 aiohttp==3.9.3
 requests==2.31.0
+MetaTrader5>=5.0.45; platform_system == "Windows"
 
 # Quantitative Analysis & Vectorized Processing
 pandas>=2.2.0

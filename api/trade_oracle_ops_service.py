@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import settings
+from execution.runtime import build_execution_client, resolve_execution_backend
 
 from .trade_oracle_mcp_service import _authorization_dependency, _error_response, _response_meta
 
@@ -68,28 +69,50 @@ class RiskEvaluateRequest(BaseModel):
     direction: Literal["LONG", "SHORT", "BUY", "SELL"] = "LONG"
 
 
-class MatchTraderConnectionRequest(BaseModel):
-    """Reusable Match-Trader connection fields with env-backed fallbacks."""
+class ExecutionConnectionRequest(BaseModel):
+    """Reusable execution-bridge connection fields with env-backed fallbacks."""
 
     model_config = ConfigDict(extra="forbid")
 
+    execution_backend: Literal["match_trader", "mt5"] = Field(default_factory=resolve_execution_backend)
+
+    # Match-Trader fields
     broker_id: str | None = None
     email: str | None = None
     password: str | None = None
     base_url: str | None = None
     system_uuid: str | None = None
 
+    # MetaTrader 5 fields
+    mt5_login: int | str | None = None
+    mt5_password: str | None = None
+    mt5_server: str | None = None
+    mt5_terminal_path: str | None = None
+    mt5_symbol_suffix: str | None = None
+    mt5_symbol_map: dict[str, str] = Field(default_factory=dict)
 
-class ExecutionPlatformDetailsRequest(MatchTraderConnectionRequest):
-    """Fetch platform state from Match-Trader via HTTP."""
+
+class ExecutionPlatformDetailsRequest(ExecutionConnectionRequest):
+    """Fetch platform state from the configured execution backend."""
 
 
-class ExecutionTransmitOrderRequest(MatchTraderConnectionRequest):
-    """Transmit one limit order through the Match-Trader execution bridge."""
+class AccountStateRequest(ExecutionConnectionRequest):
+    """Fetch live account oversight state for trailing-drawdown monitoring."""
+
+
+class ExecutionSymbolStatusRequest(ExecutionConnectionRequest):
+    """Inspect whether one execution symbol is available and quoted on the backend."""
+
+    symbol: str
+
+
+class ExecutionTransmitOrderRequest(ExecutionConnectionRequest):
+    """Transmit one limit order through the configured execution bridge."""
 
     symbol: str
     direction: Literal["BUY", "SELL"]
     size: float
+    size_mode: Literal["units", "broker_volume"] = "units"
     limit_price: float
     stop_loss: float
     take_profit: float
@@ -148,45 +171,26 @@ async def _default_live_scanner_runner(request: LiveScannerRequest) -> dict[str,
     }
 
 
-def _build_match_trader_client(
-    request: MatchTraderConnectionRequest,
+def _resolve_high_watermark(
     *,
-    match_trader_api_cls: type[Any] | None = None,
-) -> Any:
-    resolved_broker_id = request.broker_id or settings.MATCH_TRADER_BROKER_ID
-    resolved_email = request.email or settings.MATCH_TRADER_USER
-    resolved_password = request.password or settings.MATCH_TRADER_PASS
-    resolved_base_url = request.base_url or settings.MATCH_TRADER_BASE_URL
+    current_equity: float,
+    state_manager_factory: Callable[[], Any] | None = None,
+) -> tuple[float, str, str]:
+    """Resolve the persisted peak equity, falling back safely when state storage is unavailable."""
 
-    missing = [
-        name
-        for name, value in {
-            "broker_id": resolved_broker_id,
-            "email": resolved_email,
-            "password": resolved_password,
-            "base_url": resolved_base_url,
-        }.items()
-        if not value
-    ]
-    if missing:
-        raise ValueError(
-            "Missing Match-Trader connection fields: " + ", ".join(missing)
-        )
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        return current_equity, "fallback_current_equity", "Supabase credentials are not configured."
 
-    if match_trader_api_cls is None:
-        from execution.match_trader import MatchTraderAPI as resolved_match_trader_api_cls
+    try:
+        resolved_state_manager_factory = state_manager_factory
+        if resolved_state_manager_factory is None:
+            from journal.supabase_client import StateManager as resolved_state_manager_factory
 
-        match_trader_api_cls = resolved_match_trader_api_cls
-
-    client = match_trader_api_cls(
-        broker_id=resolved_broker_id,
-        email=resolved_email,
-        password=resolved_password,
-        base_url=resolved_base_url,
-    )
-    if request.system_uuid:
-        client.system_uuid = request.system_uuid
-    return client
+        state_manager = resolved_state_manager_factory()
+        high_watermark = float(state_manager.update_high_watermark(current_equity))
+        return high_watermark, "supabase", ""
+    except Exception as exc:  # pragma: no cover - defensive fail-safe for live env drift
+        return current_equity, "fallback_current_equity", str(exc)
 
 
 def build_trade_oracle_ops_app(
@@ -196,6 +200,8 @@ def build_trade_oracle_ops_app(
     phase2_scanner_runner: Callable[[list[str]], Awaitable[list[dict[str, Any]]]] | None = None,
     live_scanner_runner: Callable[[LiveScannerRequest], Awaitable[dict[str, Any]]] | None = None,
     match_trader_api_cls: type[Any] | None = None,
+    mt5_bridge_cls: type[Any] | None = None,
+    state_manager_factory: Callable[[], Any] | None = None,
 ) -> FastAPI:
     """Create the webhook-safe operational service for scanner/risk/execution flows."""
 
@@ -210,7 +216,7 @@ def build_trade_oracle_ops_app(
         title="TRADE_ORACLE Operational Service",
         version="0.1.0",
         description=(
-            "REST/webhook facade for the Phase 2 scanner, RiskManager, and Match-Trader execution bridge."
+            "REST/webhook facade for the Phase 2 scanner, RiskManager, and broker execution bridges."
         ),
     )
 
@@ -320,18 +326,154 @@ def build_trade_oracle_ops_app(
         http_request: Request,
         _: None = Depends(authorize_request),
     ) -> OpsServiceResponse:
-        client = _build_match_trader_client(payload, match_trader_api_cls=match_trader_api_cls)
+        execution_backend = resolve_execution_backend(payload.execution_backend)
+        client = build_execution_client(
+            execution_backend=execution_backend,
+            broker_id=payload.broker_id,
+            email=payload.email,
+            password=payload.password,
+            base_url=payload.base_url,
+            system_uuid=payload.system_uuid,
+            mt5_login=payload.mt5_login,
+            mt5_password=payload.mt5_password,
+            mt5_server=payload.mt5_server,
+            mt5_terminal_path=payload.mt5_terminal_path,
+            mt5_symbol_suffix=payload.mt5_symbol_suffix,
+            mt5_symbol_map=payload.mt5_symbol_map,
+            match_trader_api_cls=match_trader_api_cls,
+            mt5_bridge_cls=mt5_bridge_cls,
+        )
         authenticated = await client.authenticate()
         if not authenticated:
-            raise ValueError("Match-Trader authentication failed.")
+            raise ValueError(f"{execution_backend} authentication failed.")
 
         details = await client.get_platform_details()
         return _ops_response(
             operation="execution_platform_details",
-            detail="Retrieved platform equity and active-trade state from Match-Trader.",
+            detail="Retrieved platform equity and active-trade state from the configured execution backend.",
             result={
+                "execution_backend": execution_backend,
                 "authenticated": authenticated,
                 "platform_details": details,
+            },
+            request=http_request,
+        )
+
+    @app.post("/ops/account/state", response_model=OpsServiceResponse)
+    async def account_state(
+        payload: AccountStateRequest,
+        http_request: Request,
+        _: None = Depends(authorize_request),
+    ) -> OpsServiceResponse:
+        execution_backend = resolve_execution_backend(payload.execution_backend)
+        client = build_execution_client(
+            execution_backend=execution_backend,
+            broker_id=payload.broker_id,
+            email=payload.email,
+            password=payload.password,
+            base_url=payload.base_url,
+            system_uuid=payload.system_uuid,
+            mt5_login=payload.mt5_login,
+            mt5_password=payload.mt5_password,
+            mt5_server=payload.mt5_server,
+            mt5_terminal_path=payload.mt5_terminal_path,
+            mt5_symbol_suffix=payload.mt5_symbol_suffix,
+            mt5_symbol_map=payload.mt5_symbol_map,
+            match_trader_api_cls=match_trader_api_cls,
+            mt5_bridge_cls=mt5_bridge_cls,
+        )
+        authenticated = await client.authenticate()
+        if not authenticated:
+            raise ValueError(f"{execution_backend} authentication failed.")
+
+        details = await client.get_platform_details()
+        if not details:
+            raise ValueError(f"{execution_backend} platform state could not be retrieved.")
+
+        current_equity = float(details.get("equity", 0.0))
+        active_trades = int(details.get("active_trades", 0))
+        high_watermark, high_watermark_source, fallback_reason = _resolve_high_watermark(
+            current_equity=current_equity,
+            state_manager_factory=state_manager_factory,
+        )
+
+        max_allowed_drawdown_usd = float(high_watermark) * settings.MAX_TRAILING_DRAWDOWN_PCT
+        current_drawdown_usd = max(float(high_watermark) - current_equity, 0.0)
+        distance_to_failure_usd = max_allowed_drawdown_usd - current_drawdown_usd
+        distance_to_failure_pct = (
+            distance_to_failure_usd / float(high_watermark)
+            if float(high_watermark) > 0
+            else 0.0
+        )
+
+        from risk.manager import RiskManager
+
+        risk_manager = RiskManager(
+            current_balance=current_equity,
+            highest_equity=float(high_watermark),
+            active_trades_count=active_trades,
+        )
+
+        return _ops_response(
+            operation="account_state",
+            detail="Resolved live account oversight state from the configured execution backend and persistent memory.",
+            result={
+                "execution_backend": execution_backend,
+                "authenticated": authenticated,
+                "current_equity": current_equity,
+                "active_trades": active_trades,
+                "high_watermark": float(high_watermark),
+                "high_watermark_source": high_watermark_source,
+                "fallback_reason": fallback_reason,
+                "max_trailing_drawdown_pct": settings.MAX_TRAILING_DRAWDOWN_PCT,
+                "max_allowed_drawdown_usd": round(max_allowed_drawdown_usd, 2),
+                "current_drawdown_usd": round(current_drawdown_usd, 2),
+                "distance_to_failure_usd": round(distance_to_failure_usd, 2),
+                "distance_to_failure_pct": round(distance_to_failure_pct, 6),
+                "warning_buffer_usd": 15.0,
+                "warning_buffer_triggered": distance_to_failure_usd <= 15.0,
+                "can_open_new_trade": risk_manager.can_open_new_trade(),
+            },
+            request=http_request,
+        )
+
+    @app.post("/ops/execution/symbol-status", response_model=OpsServiceResponse)
+    async def execution_symbol_status(
+        payload: ExecutionSymbolStatusRequest,
+        http_request: Request,
+        _: None = Depends(authorize_request),
+    ) -> OpsServiceResponse:
+        execution_backend = resolve_execution_backend(payload.execution_backend)
+        client = build_execution_client(
+            execution_backend=execution_backend,
+            broker_id=payload.broker_id,
+            email=payload.email,
+            password=payload.password,
+            base_url=payload.base_url,
+            system_uuid=payload.system_uuid,
+            mt5_login=payload.mt5_login,
+            mt5_password=payload.mt5_password,
+            mt5_server=payload.mt5_server,
+            mt5_terminal_path=payload.mt5_terminal_path,
+            mt5_symbol_suffix=payload.mt5_symbol_suffix,
+            mt5_symbol_map=payload.mt5_symbol_map,
+            match_trader_api_cls=match_trader_api_cls,
+            mt5_bridge_cls=mt5_bridge_cls,
+        )
+        authenticated = await client.authenticate()
+        if not authenticated:
+            raise ValueError(f"{execution_backend} authentication failed.")
+        if not hasattr(client, "get_symbol_status"):
+            raise ValueError(f"{execution_backend} symbol inspection is not implemented.")
+
+        symbol_status = await client.get_symbol_status(payload.symbol)
+        return _ops_response(
+            operation="execution_symbol_status",
+            detail="Resolved symbol availability on the configured execution backend.",
+            result={
+                "execution_backend": execution_backend,
+                "authenticated": authenticated,
+                "symbol_status": symbol_status,
             },
             request=http_request,
         )
@@ -342,23 +484,41 @@ def build_trade_oracle_ops_app(
         http_request: Request,
         _: None = Depends(authorize_request),
     ) -> OpsServiceResponse:
-        client = _build_match_trader_client(payload, match_trader_api_cls=match_trader_api_cls)
+        execution_backend = resolve_execution_backend(payload.execution_backend)
+        client = build_execution_client(
+            execution_backend=execution_backend,
+            broker_id=payload.broker_id,
+            email=payload.email,
+            password=payload.password,
+            base_url=payload.base_url,
+            system_uuid=payload.system_uuid,
+            mt5_login=payload.mt5_login,
+            mt5_password=payload.mt5_password,
+            mt5_server=payload.mt5_server,
+            mt5_terminal_path=payload.mt5_terminal_path,
+            mt5_symbol_suffix=payload.mt5_symbol_suffix,
+            mt5_symbol_map=payload.mt5_symbol_map,
+            match_trader_api_cls=match_trader_api_cls,
+            mt5_bridge_cls=mt5_bridge_cls,
+        )
         authenticated = await client.authenticate()
         if not authenticated:
-            raise ValueError("Match-Trader authentication failed.")
+            raise ValueError(f"{execution_backend} authentication failed.")
 
         transmitted = await client.transmit_limit_order(
             symbol=payload.symbol,
             direction=payload.direction,
             size=payload.size,
+            size_mode=payload.size_mode,
             limit_price=payload.limit_price,
             stop_loss=payload.stop_loss,
             take_profit=payload.take_profit,
         )
         return _ops_response(
             operation="execution_transmit_limit_order",
-            detail="Match-Trader limit order transmission completed.",
+            detail="Execution-backend limit order transmission completed.",
             result={
+                "execution_backend": execution_backend,
                 "authenticated": authenticated,
                 "order_transmitted": bool(transmitted),
                 "symbol": payload.symbol,
@@ -378,7 +538,9 @@ __all__ = [
     "Phase2ScannerRequest",
     "LiveScannerRequest",
     "RiskEvaluateRequest",
+    "AccountStateRequest",
     "ExecutionPlatformDetailsRequest",
+    "ExecutionSymbolStatusRequest",
     "ExecutionTransmitOrderRequest",
     "build_trade_oracle_ops_app",
     "app",

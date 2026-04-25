@@ -155,7 +155,7 @@ class AIOrchestrator:
                     temperature=0.15, 
                     response_format={'type': 'json_object'}
                 )
-                raw_content = response.choices.message.content
+                raw_content = response.choices[0].message.content
             
             # Parse the raw string into a deterministic Python dictionary
             parsed_json = json.loads(raw_content)
