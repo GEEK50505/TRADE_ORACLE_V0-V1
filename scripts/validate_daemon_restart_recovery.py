@@ -34,12 +34,11 @@ def get_runtime_store():
     Fails safely if the environment is not configured correctly.
     """
     try:
-        # Using dynamic import to align with the actual project structure 
-        # indicated by AI_CONTEXT_HANDOFF.md
-        from ai.trade_oracle_runtime_state import RuntimeStateStore
-        return RuntimeStateStore()
+        # Using the unified storage factory to respect backend-selectability
+        from ai.trade_oracle_storage import build_trade_oracle_runtime_state_store
+        return build_trade_oracle_runtime_state_store()
     except ImportError as e:
-        logger.error(f"Failed to import RuntimeStateStore. Ensure you are running in the correct environment. Error: {e}")
+        logger.error(f"Failed to import runtime state store factory. Ensure you are running in the correct environment. Error: {e}")
         sys.exit(1)
 
 def run_validation():
@@ -61,11 +60,11 @@ def run_validation():
     checkpoint_value = {"last_update_id": mock_update_id, "notes": "Simulated pre-shutdown cursor"}
     
     try:
-        # Assuming save_daemon_checkpoint or equivalent exists on the store
-        if hasattr(store, 'save_daemon_checkpoint'):
-            store.save_daemon_checkpoint(cursor_key, checkpoint_value)
+        # Using the schema-compliant upsert method
+        if hasattr(store, 'upsert_daemon_checkpoint'):
+            store.upsert_daemon_checkpoint({"checkpoint_key": cursor_key, "checkpoint_value": checkpoint_value})
         else:
-            logger.warning("save_daemon_checkpoint not found on store. Skipping cursor test.")
+            logger.warning("upsert_daemon_checkpoint not found on store. Skipping cursor test.")
             return
         logger.info(f"Successfully saved checkpoint: {cursor_key} -> {mock_update_id}")
     except Exception as e:
@@ -86,7 +85,7 @@ def run_validation():
             logger.error("CRITICAL FAILURE: Checkpoint returned None after restart.")
             sys.exit(1)
             
-        recovered_id = recovered_checkpoint.get("last_update_id")
+        recovered_id = recovered_checkpoint.checkpoint_value.get("last_update_id")
         if recovered_id == mock_update_id:
             logger.info(f"SUCCESS: Recovered Telegram cursor ({recovered_id}) matches pre-shutdown state.")
         else:
