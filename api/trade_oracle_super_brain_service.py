@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +21,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ai.langgraph_orchestrator import LangGraphSupervisorOrchestrator
+from ai.trade_oracle_storage import (
+    TradeOracleBenchmarkStoreProtocol,
+    build_trade_oracle_benchmark_store,
+)
 from ai.trade_oracle_langgraph_phase1 import HumanReviewDecision, Phase2ScannerSetup, fetch_phase2_scanner_setups
 from config import settings
 
@@ -48,6 +53,8 @@ class SuperBrainRunRequest(BaseModel):
     auto_approve: bool = False
     enable_live_llm: bool = False
     run_id: str = ""
+    cycle_id: str = ""
+    benchmark_variant: str = "super_brain"
 
 
 class SuperBrainResumeRequest(BaseModel):
@@ -59,6 +66,8 @@ class SuperBrainResumeRequest(BaseModel):
     human_decision: HumanReviewDecision
     enable_live_llm: bool = False
     run_id: str = ""
+    cycle_id: str = ""
+    benchmark_variant: str = "super_brain"
 
 
 class SuperBrainResponse(BaseModel):
@@ -105,12 +114,45 @@ async def _default_scanner_runner(
     return rows
 
 
+def _resolve_run_id(*, payload_run_id: str, request: Request | None = None) -> str:
+    for candidate in (payload_run_id, request.headers.get("X-Request-ID", "") if request else ""):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return f"run_{uuid4().hex}"
+
+
+def _resolve_cycle_id(*, payload_cycle_id: str, run_id: str, fallback_seed: str = "") -> str:
+    for candidate in (payload_cycle_id, run_id, fallback_seed):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return f"cycle_{uuid4().hex}"
+
+
+def _resolve_benchmark_variant(*, payload_variant: str, default: str) -> str:
+    if isinstance(payload_variant, str) and payload_variant.strip():
+        return payload_variant.strip()
+    return default
+
+
+def _summarize_super_brain_run(*, pending_review_count: int, candidate_count: int, approved_candidate_count: int) -> str:
+    if pending_review_count > 0:
+        return "pending_review"
+    if approved_candidate_count > 0:
+        return "approved_candidate_ready"
+    if candidate_count > 0:
+        return "candidate_ranked"
+    return "no_trade"
+
+
 def build_trade_oracle_super_brain_app(
     *,
     require_auth: bool = settings.TRADE_ORACLE_BRAIN_REQUIRE_AUTH,
     api_key: str | None = settings.TRADE_ORACLE_BRAIN_API_KEY,
     checkpointer_path: str | Path = settings.TRADE_ORACLE_LANGGRAPH_CHECKPOINTER_PATH,
+    audit_backend: str = settings.TRADE_ORACLE_AUDIT_BACKEND,
     audit_db_path: str | Path = settings.TRADE_ORACLE_AUDIT_DB_PATH,
+    benchmark_backend: str = settings.TRADE_ORACLE_BENCHMARK_BACKEND,
+    benchmark_db_path: str | Path = settings.TRADE_ORACLE_BENCHMARK_DB_PATH,
     mcp_service_base_url: str | None = None,
     scanner_runner: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
 ) -> FastAPI:
@@ -122,14 +164,50 @@ def build_trade_oracle_super_brain_app(
     )
     resolved_checkpointer_path = str(checkpointer_path)
     resolved_audit_db_path = str(audit_db_path)
+    resolved_benchmark_db_path = str(benchmark_db_path)
     resolved_scanner_runner = scanner_runner or _default_scanner_runner
     orchestrator_cache: dict[tuple[bool, bool], LangGraphSupervisorOrchestrator] = {}
+    benchmark_store: TradeOracleBenchmarkStoreProtocol = build_trade_oracle_benchmark_store(
+        resolved_benchmark_db_path,
+        backend=benchmark_backend,
+    )
+
+    def record_benchmark_event(
+        *,
+        event_type: str,
+        source: str,
+        cycle_id: str,
+        run_id: str,
+        thread_id: str = "",
+        symbol: str = "",
+        benchmark_variant: str = "",
+        status: str = "",
+        decision: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        # Measurement should never be able to block the trading surface.
+        try:
+            benchmark_store.record_event(
+                event_type=event_type,
+                source=source,
+                cycle_id=cycle_id,
+                run_id=run_id,
+                thread_id=thread_id,
+                symbol=symbol,
+                benchmark_variant=benchmark_variant,
+                status=status,
+                decision=decision,
+                payload=payload,
+            )
+        except Exception:
+            return
 
     def resolve_orchestrator(*, auto_approve: bool, enable_live_llm: bool) -> LangGraphSupervisorOrchestrator:
         cache_key = (auto_approve, enable_live_llm)
         if cache_key not in orchestrator_cache:
             orchestrator_cache[cache_key] = LangGraphSupervisorOrchestrator(
                 checkpointer_path=resolved_checkpointer_path,
+                audit_backend=audit_backend,
                 audit_db_path=resolved_audit_db_path,
                 auto_approve=auto_approve,
                 enable_live_llm=enable_live_llm,
@@ -185,6 +263,12 @@ def build_trade_oracle_super_brain_app(
         http_request: Request,
         _: None = Depends(authorize_request),
     ) -> SuperBrainResponse:
+        run_id = _resolve_run_id(payload_run_id=payload.run_id, request=http_request)
+        cycle_id = _resolve_cycle_id(payload_cycle_id=payload.cycle_id, run_id=run_id)
+        benchmark_variant = _resolve_benchmark_variant(
+            payload_variant=payload.benchmark_variant,
+            default="super_brain",
+        )
         scanner_rows = [row.model_dump() for row in payload.scanner_setups]
         scanner_source = "request_payload"
         if not scanner_rows:
@@ -194,34 +278,117 @@ def build_trade_oracle_super_brain_app(
             )
             scanner_source = "phase2_scanner"
 
+        scanner_symbols = sorted(
+            {
+                str(row.get("symbol", "")).strip()
+                for row in scanner_rows
+                if isinstance(row, dict) and str(row.get("symbol", "")).strip()
+            }
+        )
+        record_benchmark_event(
+            event_type="scanner_cycle",
+            source="super_brain_service",
+            cycle_id=cycle_id,
+            run_id=run_id,
+            benchmark_variant=benchmark_variant,
+            status="ok",
+            decision="scanner_rows_ready",
+            payload={
+                "scanner_source": scanner_source,
+                "scanner_row_count": len(scanner_rows),
+                "scanner_symbols": scanner_symbols,
+                "watchlist": list(payload.watchlist),
+                "scanner_limit": payload.scanner_limit,
+            },
+        )
+
         orchestrator = resolve_orchestrator(
             auto_approve=payload.auto_approve,
             enable_live_llm=payload.enable_live_llm,
         )
-        evaluations = await orchestrator.evaluate_batch(
-            scanner_rows,
-            current_balance=payload.account_state.current_balance,
-            highest_equity=payload.account_state.highest_equity,
-            active_trades_count=payload.account_state.active_trades_count,
-            run_id=payload.run_id or http_request.headers.get("X-Request-ID", ""),
-            event_source="super_brain_service",
-        )
-        candidates = [evaluation.candidate for evaluation in evaluations if evaluation.candidate is not None]
-        ranked_candidates = sorted(
-            candidates,
-            key=lambda candidate: (
-                int(candidate.execute_trade),
-                candidate.confidence,
-                float(candidate.position_sizing.get("usd_value", 0.0)),
-                candidate.symbol,
-            ),
-            reverse=True,
-        )
+        try:
+            evaluations = await orchestrator.evaluate_batch(
+                scanner_rows,
+                current_balance=payload.account_state.current_balance,
+                highest_equity=payload.account_state.highest_equity,
+                active_trades_count=payload.account_state.active_trades_count,
+                run_id=run_id,
+                event_source="super_brain_service",
+            )
+            candidates = [evaluation.candidate for evaluation in evaluations if evaluation.candidate is not None]
+            ranked_candidates = sorted(
+                candidates,
+                key=lambda candidate: (
+                    int(candidate.execute_trade),
+                    candidate.confidence,
+                    float(candidate.position_sizing.get("usd_value", 0.0)),
+                    candidate.symbol,
+                ),
+                reverse=True,
+            )
+            pending_review_count = sum(1 for evaluation in evaluations if evaluation.status == "pending_review")
+            approved_candidate_count = sum(1 for candidate in ranked_candidates if candidate.execute_trade)
+            top_candidate = ranked_candidates[0] if ranked_candidates else None
+            summary_decision = _summarize_super_brain_run(
+                pending_review_count=pending_review_count,
+                candidate_count=len(ranked_candidates),
+                approved_candidate_count=approved_candidate_count,
+            )
+            record_benchmark_event(
+                event_type="super_brain_run",
+                source="super_brain_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                symbol=top_candidate.symbol if top_candidate else "",
+                benchmark_variant=benchmark_variant,
+                status="ok",
+                decision=summary_decision,
+                payload={
+                    "scanner_source": scanner_source,
+                    "evaluation_count": len(evaluations),
+                    "pending_review_count": pending_review_count,
+                    "candidate_count": len(ranked_candidates),
+                    "approved_candidate_count": approved_candidate_count,
+                    "top_candidate_symbol": top_candidate.symbol if top_candidate else "",
+                    "top_candidate_confidence": top_candidate.confidence if top_candidate else 0.0,
+                },
+            )
+            record_benchmark_event(
+                event_type="cycle_summary",
+                source="super_brain_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                symbol=top_candidate.symbol if top_candidate else "",
+                benchmark_variant=benchmark_variant,
+                status="ok",
+                decision=summary_decision,
+                payload={
+                    "operation": "run_once",
+                    "scanner_row_count": len(scanner_rows),
+                    "evaluation_count": len(evaluations),
+                    "candidate_count": len(ranked_candidates),
+                },
+            )
+        except Exception as exc:
+            record_benchmark_event(
+                event_type="super_brain_run",
+                source="super_brain_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                benchmark_variant=benchmark_variant,
+                status="error",
+                decision="exception",
+                payload={"error_type": type(exc).__name__, "message": str(exc)},
+            )
+            raise
+
         return _super_brain_response(
             operation="run_once",
             detail="TRADE_ORACLE Super Brain completed a scan-and-evaluate cycle.",
             result={
-                "run_id": payload.run_id or http_request.headers.get("X-Request-ID", ""),
+                "run_id": run_id,
+                "cycle_id": cycle_id,
+                "benchmark_variant": benchmark_variant,
                 "scanner_source": scanner_source,
                 "scanner_row_count": len(scanner_rows),
                 "evaluation_count": len(evaluations),
@@ -238,20 +405,80 @@ def build_trade_oracle_super_brain_app(
         http_request: Request,
         _: None = Depends(authorize_request),
     ) -> SuperBrainResponse:
+        run_id = _resolve_run_id(payload_run_id=payload.run_id, request=http_request)
+        cycle_id = _resolve_cycle_id(
+            payload_cycle_id=payload.cycle_id,
+            run_id=run_id,
+            fallback_seed=payload.thread_id,
+        )
+        benchmark_variant = _resolve_benchmark_variant(
+            payload_variant=payload.benchmark_variant,
+            default="super_brain",
+        )
         orchestrator = resolve_orchestrator(
             auto_approve=False,
             enable_live_llm=payload.enable_live_llm,
         )
-        evaluation = await orchestrator.resume_review(
-            thread_id=payload.thread_id,
-            human_decision=payload.human_decision.model_dump(),
-            run_id=payload.run_id or http_request.headers.get("X-Request-ID", ""),
-            event_source="super_brain_service",
-        )
+        try:
+            evaluation = await orchestrator.resume_review(
+                thread_id=payload.thread_id,
+                human_decision=payload.human_decision.model_dump(),
+                run_id=run_id,
+                event_source="super_brain_service",
+            )
+            resolved_symbol = evaluation.candidate.symbol if evaluation.candidate is not None else ""
+            record_benchmark_event(
+                event_type="super_brain_resume",
+                source="super_brain_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                thread_id=payload.thread_id,
+                symbol=resolved_symbol,
+                benchmark_variant=benchmark_variant,
+                status="ok",
+                decision=evaluation.status,
+                payload={
+                    "review_action": payload.human_decision.action,
+                    "candidate_execute_trade": bool(evaluation.candidate and evaluation.candidate.execute_trade),
+                    "candidate_execution_status": (
+                        evaluation.candidate.execution_status if evaluation.candidate is not None else ""
+                    ),
+                },
+            )
+            record_benchmark_event(
+                event_type="cycle_summary",
+                source="super_brain_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                thread_id=payload.thread_id,
+                symbol=resolved_symbol,
+                benchmark_variant=benchmark_variant,
+                status="ok",
+                decision=evaluation.status,
+                payload={"operation": "review_resume", "review_action": payload.human_decision.action},
+            )
+        except Exception as exc:
+            record_benchmark_event(
+                event_type="super_brain_resume",
+                source="super_brain_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                thread_id=payload.thread_id,
+                benchmark_variant=benchmark_variant,
+                status="error",
+                decision="exception",
+                payload={"error_type": type(exc).__name__, "message": str(exc)},
+            )
+            raise
         return _super_brain_response(
             operation="review_resume",
             detail="TRADE_ORACLE Super Brain resumed a human-review thread.",
-            result=evaluation.model_dump(),
+            result={
+                **evaluation.model_dump(),
+                "run_id": run_id,
+                "cycle_id": cycle_id,
+                "benchmark_variant": benchmark_variant,
+            },
             request=http_request,
         )
 

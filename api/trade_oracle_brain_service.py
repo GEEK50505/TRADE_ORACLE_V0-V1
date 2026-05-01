@@ -114,6 +114,7 @@ def build_trade_oracle_brain_app(
     require_auth: bool = settings.TRADE_ORACLE_BRAIN_REQUIRE_AUTH,
     api_key: str | None = settings.TRADE_ORACLE_BRAIN_API_KEY,
     checkpointer_path: str | Path = settings.TRADE_ORACLE_LANGGRAPH_CHECKPOINTER_PATH,
+    audit_backend: str = settings.TRADE_ORACLE_AUDIT_BACKEND,
     audit_db_path: str | Path = settings.TRADE_ORACLE_AUDIT_DB_PATH,
     mcp_service_base_url: str | None = None,
 ) -> FastAPI:
@@ -132,6 +133,7 @@ def build_trade_oracle_brain_app(
         if cache_key not in orchestrator_cache:
             orchestrator_cache[cache_key] = LangGraphSupervisorOrchestrator(
                 checkpointer_path=resolved_checkpointer_path,
+                audit_backend=audit_backend,
                 audit_db_path=resolved_audit_db_path,
                 auto_approve=auto_approve,
                 enable_live_llm=enable_live_llm,

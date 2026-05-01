@@ -17,6 +17,9 @@
       "method": "POST",
       "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/superbrain/run-once",
       "body": {
+        "run_id": "{{ $json.run_id }}",
+        "cycle_id": "{{ $json.cycle_id }}",
+        "benchmark_variant": "{{ $json.benchmark_variant || 'super_brain' }}",
         "watchlist": [
           "BTC/USDT",
           "ETH/USDT",
@@ -45,6 +48,9 @@
       "method": "POST",
       "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/superbrain/review-resume",
       "body": {
+        "run_id": "{{ $json.run_id }}",
+        "cycle_id": "{{ $json.cycle_id }}",
+        "benchmark_variant": "{{ $json.benchmark_variant || 'super_brain' }}",
         "thread_id": "{{ $json.thread_id }}",
         "human_decision": {
           "action": "APPROVE",
@@ -61,6 +67,10 @@
       "method": "POST",
       "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/services/ops/ops/risk/evaluate",
       "body": {
+        "symbol": "{{ $json.symbol }}",
+        "run_id": "{{ $json.run_id }}",
+        "cycle_id": "{{ $json.cycle_id }}",
+        "benchmark_variant": "{{ $json.benchmark_variant || 'super_brain' }}",
         "current_balance": "{{ $json.current_balance }}",
         "highest_equity": "{{ $json.highest_equity }}",
         "active_trades_count": "{{ $json.active_trades_count }}",
@@ -77,14 +87,23 @@
       "method": "POST",
       "url": "{{ $env.TRADE_ORACLE_PLATFORM_BASE_URL }}/services/ops/ops/execution/transmit-limit-order",
       "body": {
+        "execution_backend": "{{ $env.TRADE_ORACLE_EXECUTION_BACKEND || 'mt5' }}",
+        "run_id": "{{ $json.run_id }}",
+        "cycle_id": "{{ $json.cycle_id }}",
+        "benchmark_variant": "{{ $json.benchmark_variant || 'super_brain' }}",
         "broker_id": "{{ $env.MATCH_TRADER_BROKER_ID }}",
         "email": "{{ $env.MATCH_TRADER_USER }}",
         "password": "{{ $env.MATCH_TRADER_PASS }}",
         "base_url": "{{ $env.MATCH_TRADER_BASE_URL }}",
         "system_uuid": "{{ $env.MATCH_TRADER_SYSTEM_UUID }}",
+        "mt5_login": "{{ $env.MT5_LOGIN }}",
+        "mt5_password": "{{ $env.MT5_PASSWORD }}",
+        "mt5_server": "{{ $env.MT5_SERVER }}",
+        "mt5_terminal_path": "{{ $env.MT5_TERMINAL_PATH }}",
         "symbol": "{{ $json.symbol }}",
         "direction": "{{ $json.direction }}",
         "size": "{{ $json.position_sizing.tokens }}",
+        "size_mode": "units",
         "limit_price": "{{ $json.position_sizing.entry_price }}",
         "stop_loss": "{{ $json.position_sizing.stop_loss }}",
         "take_profit": "{{ $json.position_sizing.tp1 }}"
@@ -99,6 +118,9 @@
     "approved_execution": "Only candidates with execute_trade=true and execution_status='approved' are eligible for order transmission."
   },
   "minimum_n8n_state": {
+    "cycle_id": "Persist per scheduled cycle so benchmark events can be joined across run-once, review-resume, risk, and execution.",
+    "run_id": "Persist per outbound request lineage so platform logs and benchmark events share the same request identity.",
+    "benchmark_variant": "Persist whether the cycle is running in baseline or super_brain mode.",
     "thread_id": "Persist per human-review branch so resume-review can target the same LangGraph checkpoint.",
     "account_state": "current_balance, highest_equity, active_trades_count",
     "candidate": "symbol, direction, position_sizing, final_decision"

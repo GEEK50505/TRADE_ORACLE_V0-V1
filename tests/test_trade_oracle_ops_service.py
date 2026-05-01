@@ -2,6 +2,7 @@
 
 from fastapi.testclient import TestClient
 
+from ai.trade_oracle_benchmark import TradeOracleBenchmarkStore
 from api.trade_oracle_ops_service import LiveScannerRequest, build_trade_oracle_ops_app
 
 
@@ -389,3 +390,73 @@ def test_ops_service_account_state_endpoint_falls_back_when_state_store_unavaila
     assert body["result"]["high_watermark"] == 5125.0
     assert body["result"]["high_watermark_source"] == "fallback_current_equity"
     assert "Supabase unavailable for test" in body["result"]["fallback_reason"]
+
+
+def test_ops_service_writes_benchmark_events_for_risk_and_transmit():
+    cycle_id = "cycle-ops-001"
+    app = build_trade_oracle_ops_app(
+        require_auth=False,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        mt5_bridge_cls=_FakeMT5Bridge,
+        benchmark_db_path="results/test_trade_oracle_ops_benchmark.sqlite",
+    )
+    client = TestClient(app)
+
+    risk_response = client.post(
+        "/ops/risk/evaluate",
+        json={
+            "symbol": "AVAX/USDT",
+            "current_balance": 5100.0,
+            "highest_equity": 5150.0,
+            "active_trades_count": 1,
+            "entry_price": 41.25,
+            "atr": 1.35,
+            "direction": "BUY",
+            "run_id": "run-ops-risk-001",
+            "cycle_id": cycle_id,
+            "benchmark_variant": "super_brain",
+        },
+    )
+    risk_body = risk_response.json()
+
+    assert risk_response.status_code == 200
+    assert risk_body["result"]["cycle_id"] == cycle_id
+
+    transmit_response = client.post(
+        "/ops/execution/transmit-limit-order",
+        json={
+            "execution_backend": "mt5",
+            "mt5_login": 12345678,
+            "mt5_password": "secret",
+            "mt5_server": "Maven-Demo",
+            "mt5_terminal_path": "C:\\MT5\\terminal64.exe",
+            "symbol": "AVAX/USDT",
+            "direction": "BUY",
+            "size": 4.93827,
+            "size_mode": "units",
+            "limit_price": 41.25,
+            "stop_loss": 39.225,
+            "take_profit": 43.95,
+            "run_id": "run-ops-transmit-001",
+            "cycle_id": cycle_id,
+            "benchmark_variant": "super_brain",
+        },
+    )
+    transmit_body = transmit_response.json()
+
+    assert transmit_response.status_code == 200
+    assert transmit_body["result"]["cycle_id"] == cycle_id
+
+    store = TradeOracleBenchmarkStore("results/test_trade_oracle_ops_benchmark.sqlite")
+    cycle_events = store.list_cycle_events(cycle_id, limit=20)
+    event_types = {event.event_type for event in cycle_events}
+
+    assert "risk_check" in event_types
+    assert "order_transmit_attempt" in event_types
+    assert "order_transmit_result" in event_types
+    assert any(
+        event.execution_backend == "mt5" and event.symbol == "AVAX/USDT"
+        for event in cycle_events
+        if event.event_type == "order_transmit_result"
+    )

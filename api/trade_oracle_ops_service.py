@@ -10,12 +10,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ai.trade_oracle_storage import (
+    TradeOracleBenchmarkStoreProtocol,
+    build_trade_oracle_benchmark_store,
+)
 from config import settings
 from execution.runtime import build_execution_client, resolve_execution_backend
 
@@ -67,6 +72,10 @@ class RiskEvaluateRequest(BaseModel):
     entry_price: float | None = None
     atr: float | None = None
     direction: Literal["LONG", "SHORT", "BUY", "SELL"] = "LONG"
+    symbol: str = ""
+    run_id: str = ""
+    cycle_id: str = ""
+    benchmark_variant: str = "super_brain"
 
 
 class ExecutionConnectionRequest(BaseModel):
@@ -75,6 +84,9 @@ class ExecutionConnectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_backend: Literal["match_trader", "mt5"] = Field(default_factory=resolve_execution_backend)
+    run_id: str = ""
+    cycle_id: str = ""
+    benchmark_variant: str = "super_brain"
 
     # Match-Trader fields
     broker_id: str | None = None
@@ -142,6 +154,26 @@ def _normalize_risk_direction(direction: str) -> str:
     return "LONG" if direction.upper() in {"BUY", "LONG"} else "SHORT"
 
 
+def _resolve_run_id(*, payload_run_id: str, request: Request | None = None) -> str:
+    for candidate in (payload_run_id, request.headers.get("X-Request-ID", "") if request else ""):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return f"run_{uuid4().hex}"
+
+
+def _resolve_cycle_id(*, payload_cycle_id: str, run_id: str, fallback_seed: str = "") -> str:
+    for candidate in (payload_cycle_id, run_id, fallback_seed):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return f"cycle_{uuid4().hex}"
+
+
+def _resolve_benchmark_variant(*, payload_variant: str, default: str) -> str:
+    if isinstance(payload_variant, str) and payload_variant.strip():
+        return payload_variant.strip()
+    return default
+
+
 async def _default_phase2_scanner_runner(watchlist: list[str]) -> list[dict[str, Any]]:
     from data.scanner import MarketScanner
 
@@ -202,6 +234,8 @@ def build_trade_oracle_ops_app(
     match_trader_api_cls: type[Any] | None = None,
     mt5_bridge_cls: type[Any] | None = None,
     state_manager_factory: Callable[[], Any] | None = None,
+    benchmark_backend: str = settings.TRADE_ORACLE_BENCHMARK_BACKEND,
+    benchmark_db_path: str | Path = settings.TRADE_ORACLE_BENCHMARK_DB_PATH,
 ) -> FastAPI:
     """Create the webhook-safe operational service for scanner/risk/execution flows."""
 
@@ -211,6 +245,42 @@ def build_trade_oracle_ops_app(
     )
     resolved_phase2_scanner_runner = phase2_scanner_runner or _default_phase2_scanner_runner
     resolved_live_scanner_runner = live_scanner_runner or _default_live_scanner_runner
+    benchmark_store: TradeOracleBenchmarkStoreProtocol = build_trade_oracle_benchmark_store(
+        str(benchmark_db_path),
+        backend=benchmark_backend,
+    )
+
+    def record_benchmark_event(
+        *,
+        event_type: str,
+        source: str,
+        cycle_id: str,
+        run_id: str,
+        thread_id: str = "",
+        symbol: str = "",
+        execution_backend: str = "",
+        benchmark_variant: str = "",
+        status: str = "",
+        decision: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        # Benchmark persistence must fail open so execution safety is never reduced by telemetry.
+        try:
+            benchmark_store.record_event(
+                event_type=event_type,
+                source=source,
+                cycle_id=cycle_id,
+                run_id=run_id,
+                thread_id=thread_id,
+                symbol=symbol,
+                execution_backend=execution_backend,
+                benchmark_variant=benchmark_variant,
+                status=status,
+                decision=decision,
+                payload=payload,
+            )
+        except Exception:
+            return
 
     app = FastAPI(
         title="TRADE_ORACLE Operational Service",
@@ -291,26 +361,69 @@ def build_trade_oracle_ops_app(
         http_request: Request,
         _: None = Depends(authorize_request),
     ) -> OpsServiceResponse:
-        from risk.manager import RiskManager
-
-        manager = RiskManager(
-            current_balance=payload.current_balance,
-            highest_equity=payload.highest_equity,
-            active_trades_count=payload.active_trades_count,
+        run_id = _resolve_run_id(payload_run_id=payload.run_id, request=http_request)
+        cycle_id = _resolve_cycle_id(payload_cycle_id=payload.cycle_id, run_id=run_id)
+        benchmark_variant = _resolve_benchmark_variant(
+            payload_variant=payload.benchmark_variant,
+            default="super_brain",
         )
-        can_open_new_trade = manager.can_open_new_trade()
-        position_size = None
-        if payload.entry_price is not None and payload.atr is not None:
-            position_size = manager.calculate_position_size(
-                entry_price=payload.entry_price,
-                atr=payload.atr,
-                direction=_normalize_risk_direction(payload.direction),
+        try:
+            from risk.manager import RiskManager
+
+            manager = RiskManager(
+                current_balance=payload.current_balance,
+                highest_equity=payload.highest_equity,
+                active_trades_count=payload.active_trades_count,
             )
+            can_open_new_trade = manager.can_open_new_trade()
+            position_size = None
+            if payload.entry_price is not None and payload.atr is not None:
+                position_size = manager.calculate_position_size(
+                    entry_price=payload.entry_price,
+                    atr=payload.atr,
+                    direction=_normalize_risk_direction(payload.direction),
+                )
+            decision = "allow" if can_open_new_trade else "deny"
+            record_benchmark_event(
+                event_type="risk_check",
+                source="ops_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                symbol=payload.symbol,
+                benchmark_variant=benchmark_variant,
+                status="ok",
+                decision=decision,
+                payload={
+                    "current_balance": payload.current_balance,
+                    "highest_equity": payload.highest_equity,
+                    "active_trades_count": payload.active_trades_count,
+                    "entry_price": payload.entry_price,
+                    "atr": payload.atr,
+                    "direction": payload.direction,
+                    "position_size_available": position_size is not None,
+                },
+            )
+        except Exception as exc:
+            record_benchmark_event(
+                event_type="risk_check",
+                source="ops_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                symbol=payload.symbol,
+                benchmark_variant=benchmark_variant,
+                status="error",
+                decision="exception",
+                payload={"error_type": type(exc).__name__, "message": str(exc)},
+            )
+            raise
 
         return _ops_response(
             operation="evaluate_risk",
             detail="RiskManager gatekeeping and sizing check completed.",
             result={
+                "run_id": run_id,
+                "cycle_id": cycle_id,
+                "benchmark_variant": benchmark_variant,
                 "can_open_new_trade": can_open_new_trade,
                 "position_size": position_size,
                 "risk_amount_usd": manager.risk_usd,
@@ -484,7 +597,36 @@ def build_trade_oracle_ops_app(
         http_request: Request,
         _: None = Depends(authorize_request),
     ) -> OpsServiceResponse:
+        run_id = _resolve_run_id(payload_run_id=payload.run_id, request=http_request)
+        cycle_id = _resolve_cycle_id(
+            payload_cycle_id=payload.cycle_id,
+            run_id=run_id,
+            fallback_seed=payload.symbol,
+        )
+        benchmark_variant = _resolve_benchmark_variant(
+            payload_variant=payload.benchmark_variant,
+            default="super_brain",
+        )
         execution_backend = resolve_execution_backend(payload.execution_backend)
+        record_benchmark_event(
+            event_type="order_transmit_attempt",
+            source="ops_service",
+            cycle_id=cycle_id,
+            run_id=run_id,
+            symbol=payload.symbol,
+            execution_backend=execution_backend,
+            benchmark_variant=benchmark_variant,
+            status="pending",
+            decision="attempt",
+            payload={
+                "direction": payload.direction,
+                "size": payload.size,
+                "size_mode": payload.size_mode,
+                "limit_price": payload.limit_price,
+                "stop_loss": payload.stop_loss,
+                "take_profit": payload.take_profit,
+            },
+        )
         client = build_execution_client(
             execution_backend=execution_backend,
             broker_id=payload.broker_id,
@@ -501,23 +643,65 @@ def build_trade_oracle_ops_app(
             match_trader_api_cls=match_trader_api_cls,
             mt5_bridge_cls=mt5_bridge_cls,
         )
-        authenticated = await client.authenticate()
-        if not authenticated:
-            raise ValueError(f"{execution_backend} authentication failed.")
+        try:
+            authenticated = await client.authenticate()
+            if not authenticated:
+                raise ValueError(f"{execution_backend} authentication failed.")
 
-        transmitted = await client.transmit_limit_order(
-            symbol=payload.symbol,
-            direction=payload.direction,
-            size=payload.size,
-            size_mode=payload.size_mode,
-            limit_price=payload.limit_price,
-            stop_loss=payload.stop_loss,
-            take_profit=payload.take_profit,
-        )
+            transmitted = await client.transmit_limit_order(
+                symbol=payload.symbol,
+                direction=payload.direction,
+                size=payload.size,
+                size_mode=payload.size_mode,
+                limit_price=payload.limit_price,
+                stop_loss=payload.stop_loss,
+                take_profit=payload.take_profit,
+            )
+            record_benchmark_event(
+                event_type="order_transmit_result",
+                source="ops_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                symbol=payload.symbol,
+                execution_backend=execution_backend,
+                benchmark_variant=benchmark_variant,
+                status="ok" if transmitted else "rejected",
+                decision="transmitted" if transmitted else "not_transmitted",
+                payload={
+                    "direction": payload.direction,
+                    "size": payload.size,
+                    "size_mode": payload.size_mode,
+                    "limit_price": payload.limit_price,
+                    "stop_loss": payload.stop_loss,
+                    "take_profit": payload.take_profit,
+                    "authenticated": authenticated,
+                },
+            )
+        except Exception as exc:
+            record_benchmark_event(
+                event_type="order_transmit_result",
+                source="ops_service",
+                cycle_id=cycle_id,
+                run_id=run_id,
+                symbol=payload.symbol,
+                execution_backend=execution_backend,
+                benchmark_variant=benchmark_variant,
+                status="error",
+                decision="exception",
+                payload={
+                    "direction": payload.direction,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+            raise
         return _ops_response(
             operation="execution_transmit_limit_order",
             detail="Execution-backend limit order transmission completed.",
             result={
+                "run_id": run_id,
+                "cycle_id": cycle_id,
+                "benchmark_variant": benchmark_variant,
                 "execution_backend": execution_backend,
                 "authenticated": authenticated,
                 "order_transmitted": bool(transmitted),

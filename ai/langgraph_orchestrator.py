@@ -16,7 +16,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import settings
-from .trade_oracle_audit import TradeOracleAuditStore
+from .trade_oracle_storage import TradeOracleAuditStoreProtocol, build_trade_oracle_audit_store
 from .trade_oracle_langgraph_phase1 import (
     AccountStateContext,
     build_initial_state,
@@ -94,10 +94,11 @@ class LangGraphSupervisorOrchestrator:
     auto_approve: bool = False
     mcp_service_base_url: str | None = None
     mcp_http_client: Any | None = None
+    audit_backend: str = settings.TRADE_ORACLE_AUDIT_BACKEND
     audit_db_path: str | Path = settings.TRADE_ORACLE_AUDIT_DB_PATH
     graph: Any = field(init=False, repr=False)
     command_cls: type[Any] = field(init=False, repr=False)
-    audit_store: TradeOracleAuditStore = field(init=False, repr=False)
+    audit_store: TradeOracleAuditStoreProtocol = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.graph = build_trade_oracle_graph(
@@ -107,7 +108,10 @@ class LangGraphSupervisorOrchestrator:
             mcp_http_client=self.mcp_http_client,
         )
         self.command_cls = self._resolve_command_class()
-        self.audit_store = TradeOracleAuditStore(self.audit_db_path)
+        self.audit_store = build_trade_oracle_audit_store(
+            self.audit_db_path,
+            backend=self.audit_backend,
+        )
 
     @staticmethod
     def _resolve_command_class() -> type[Any]:

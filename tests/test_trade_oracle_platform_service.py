@@ -112,6 +112,7 @@ def test_platform_service_exposes_capabilities_and_system_health():
     assert capabilities_body["mounted_services"]["ops"]["routes"]["account_state"] == "/services/ops/ops/account/state"
     assert capabilities_body["mounted_services"]["ops"]["routes"]["risk_evaluate"] == "/services/ops/ops/risk/evaluate"
     assert capabilities_body["n8n_entrypoints"]["audit_recent"] == "/system/audit/recent"
+    assert capabilities_body["n8n_entrypoints"]["benchmark_summary"] == "/system/benchmark/summary"
 
 
 def test_platform_service_runs_superbrain_and_mounted_auxiliary_services():
@@ -326,3 +327,123 @@ def test_platform_service_supports_prebroker_live_demo_chain(monkeypatch):
     execution_body = execution_response.json()
     assert execution_response.status_code == 200
     assert execution_body["result"]["order_transmitted"] is True
+
+
+def test_platform_service_exposes_benchmark_summary_recent_and_cycle_views(monkeypatch):
+    cycle_id = "cycle-platform-benchmark-001"
+    monkeypatch.setattr("config.settings.SUPABASE_URL", "")
+    monkeypatch.setattr("config.settings.SUPABASE_KEY", "")
+
+    app = build_trade_oracle_platform_app(
+        require_auth=False,
+        checkpointer_path="results/test_trade_oracle_platform_benchmark.sqlite",
+        audit_db_path="results/test_trade_oracle_platform_benchmark_audit.sqlite",
+        benchmark_db_path="results/test_trade_oracle_platform_benchmark_events.sqlite",
+        scanner_runner=_fake_super_brain_scanner_runner,
+        phase2_scanner_runner=_fake_phase2_scanner_runner,
+        live_scanner_runner=_fake_live_scanner_runner,
+        match_trader_api_cls=_FakeMatchTraderAPI,
+    )
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/superbrain/run-once",
+        json={
+            "watchlist": ["SOL/USDT"],
+            "scanner_limit": 1,
+            "account_state": {
+                "current_balance": 5200.0,
+                "highest_equity": 5300.0,
+                "active_trades_count": 1,
+            },
+            "auto_approve": False,
+            "run_id": "run-platform-benchmark-001",
+            "cycle_id": cycle_id,
+            "benchmark_variant": "super_brain",
+        },
+    )
+    run_body = run_response.json()
+    assert run_response.status_code == 200
+
+    thread_id = run_body["result"]["evaluations"][0]["thread_id"]
+    resume_response = client.post(
+        "/superbrain/review-resume",
+        json={
+            "thread_id": thread_id,
+            "human_decision": {
+                "action": "APPROVE",
+                "reviewer": "pytest",
+                "notes": "Approve benchmark chain candidate.",
+            },
+            "run_id": "run-platform-benchmark-002",
+            "cycle_id": cycle_id,
+            "benchmark_variant": "super_brain",
+        },
+    )
+    resume_body = resume_response.json()
+    assert resume_response.status_code == 200
+    candidate = resume_body["result"]["candidate"]
+
+    risk_response = client.post(
+        "/services/ops/ops/risk/evaluate",
+        json={
+            "symbol": candidate["symbol"],
+            "current_balance": 5200.0,
+            "highest_equity": 5300.0,
+            "active_trades_count": 1,
+            "entry_price": candidate["entry_price"],
+            "atr": resume_body["result"]["raw_setup"]["localized_atr"],
+            "direction": candidate["direction"],
+            "run_id": "run-platform-benchmark-003",
+            "cycle_id": cycle_id,
+            "benchmark_variant": "super_brain",
+        },
+    )
+    assert risk_response.status_code == 200
+
+    execution_response = client.post(
+        "/services/ops/ops/execution/transmit-limit-order",
+        json={
+            "broker_id": "broker",
+            "email": "user@example.com",
+            "password": "secret",
+            "base_url": "https://example.test",
+            "system_uuid": "SYSTEM_123",
+            "symbol": candidate["symbol"],
+            "direction": candidate["direction"],
+            "size": candidate["size_tokens"],
+            "limit_price": candidate["entry_price"],
+            "stop_loss": candidate["stop_loss"],
+            "take_profit": candidate["take_profit"],
+            "run_id": "run-platform-benchmark-004",
+            "cycle_id": cycle_id,
+            "benchmark_variant": "super_brain",
+        },
+    )
+    assert execution_response.status_code == 200
+
+    summary_response = client.get("/system/benchmark/summary?benchmark_variant=super_brain")
+    summary_body = summary_response.json()
+    assert summary_response.status_code == 200
+    assert summary_body["summary"]["total_cycles"] >= 1
+    assert summary_body["summary"]["transmit_attempts"] >= 1
+    assert summary_body["summary"]["transmit_successes"] >= 1
+
+    recent_response = client.get(f"/system/benchmark/recent?cycle_id={cycle_id}")
+    recent_body = recent_response.json()
+    assert recent_response.status_code == 200
+    assert recent_body["count"] >= 1
+    assert all(event["cycle_id"] == cycle_id for event in recent_body["events"])
+
+    cycle_events_response = client.get(f"/system/benchmark/cycle/{cycle_id}")
+    cycle_events_body = cycle_events_response.json()
+    assert cycle_events_response.status_code == 200
+    assert cycle_events_body["count"] >= 1
+
+    cycles_recent_response = client.get("/system/benchmark/cycles/recent?benchmark_variant=super_brain")
+    cycles_recent_body = cycles_recent_response.json()
+    assert cycles_recent_response.status_code == 200
+    assert cycles_recent_body["count"] >= 1
+    matching_cycles = [cycle for cycle in cycles_recent_body["cycles"] if cycle["cycle_id"] == cycle_id]
+    assert matching_cycles
+    assert matching_cycles[0]["transmit_attempted"] is True

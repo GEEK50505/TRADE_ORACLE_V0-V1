@@ -1,0 +1,10 @@
+{
+    "runtime_mode":  "daemon",
+    "tunnel_healthy":  true,
+    "observed_at_utc":  "2026-05-01T06:59:08.1863395Z",
+    "webhook_url":  "https://internet-turbo-replace-aimed.trycloudflare.com/",
+    "status":  "degraded",
+    "platform_healthy":  true,
+    "daemon_healthy":  false,
+    "n8n_healthy":  true
+}

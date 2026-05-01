@@ -19,6 +19,8 @@ This matches the current platform surface exposed by:
 - `/services/ops/ops/execution/transmit-limit-order`
 - `/system/health`
 - `/system/capabilities`
+- `/system/benchmark/summary`
+- `/system/benchmark/cycles/recent`
 
 ## Core Design Principles
 
@@ -50,6 +52,8 @@ This matches the current platform surface exposed by:
 5. Logging is first-class
 
 - Every run should have a `run_id`.
+- Every scheduled cycle should also have a `cycle_id`.
+- Every benchmarked orchestration path should carry a `benchmark_variant`.
 - Every external request should carry `X-Request-ID`.
 - n8n should persist summary records for:
   - scanner source
@@ -57,6 +61,7 @@ This matches the current platform surface exposed by:
   - pending review payload
   - risk recheck result
   - execution result
+  - benchmark cycle outcome
 
 ## Recommended Production Workflow
 
@@ -99,6 +104,8 @@ Purpose:
 Recommended fields:
 
 - `run_id`
+- `cycle_id`
+- `benchmark_variant`
 - `scheduled_at_utc`
 - `platform_base_url`
 - `platform_api_key`
@@ -156,6 +163,12 @@ Purpose:
 
 - Construct one canonical payload for `/superbrain/run-once`.
 
+Required benchmark-aware fields:
+
+- `run_id`
+- `cycle_id`
+- `benchmark_variant`
+
 Suggested name:
 
 - `BRAIN Build Run Once Request`
@@ -174,6 +187,11 @@ Purpose:
 
 - Let the platform run scanner + LangGraph evaluation in one step.
 
+Important:
+
+- pass `run_id`, `cycle_id`, and `benchmark_variant` in the request body
+- also send `X-Request-ID={{run_id}}`
+
 Suggested name:
 
 - `BRAIN Run Super Brain`
@@ -190,6 +208,9 @@ Purpose:
   - `result.evaluations`
   - `result.candidates`
 - Extract:
+  - `run_id`
+  - `cycle_id`
+  - `benchmark_variant`
   - top candidate
   - first pending review
   - counts
@@ -226,6 +247,8 @@ Type:
 Purpose:
 
 - Build the human-review message from:
+  - `run_id`
+  - `cycle_id`
   - `thread_id`
   - `review_context`
   - `final_decision`
@@ -251,6 +274,13 @@ Purpose:
 
 - Receive human decision from OpenClaw or Telegram action.
 - Call `/superbrain/review-resume`.
+
+Required fields to persist and resend:
+
+- `thread_id`
+- `run_id`
+- `cycle_id`
+- `benchmark_variant`
 
 Suggested workflow name:
 
@@ -285,6 +315,13 @@ Purpose:
 
 - Defense-in-depth check before execution.
 
+Required benchmark-aware fields:
+
+- `symbol`
+- `run_id`
+- `cycle_id`
+- `benchmark_variant`
+
 Suggested name:
 
 - `RISK Optional Recheck`
@@ -314,6 +351,14 @@ Purpose:
 
 - Convert candidate + risk result into the exact execution payload expected by the ops service.
 
+Required benchmark-aware fields:
+
+- `execution_backend`
+- `run_id`
+- `cycle_id`
+- `benchmark_variant`
+- `size_mode`
+
 Suggested name:
 
 - `EXEC Build Order Payload`
@@ -331,6 +376,7 @@ Endpoint:
 Critical note:
 
 - Do not configure aggressive automatic retries here.
+- include `X-Request-ID={{run_id}}` for traceability
 
 Suggested name:
 
@@ -355,6 +401,8 @@ Type:
 Recommended fields:
 
 - `run_id`
+- `cycle_id`
+- `benchmark_variant`
 - schedule timestamp
 - scanner row count
 - evaluation count
@@ -366,6 +414,23 @@ Recommended fields:
 Suggested name:
 
 - `AUDIT Persist Cycle Record`
+
+#### 18. Optional Benchmark Pullback
+
+Type:
+
+- `HTTP Request`
+
+Recommended endpoints:
+
+- `GET /system/benchmark/summary`
+- `GET /system/benchmark/cycles/recent`
+- `GET /system/benchmark/cycle/{cycle_id}`
+
+Purpose:
+
+- verify that the scheduled cycle produced a benchmark trail
+- let n8n persist operator-facing cycle summaries without reading raw sqlite files
 
 ## Naming Standard
 
@@ -450,5 +515,11 @@ The cleanest production shape is:
 - the platform service as the primary TRADE_ORACLE boundary
 - LangGraph as the decision engine
 - ops endpoints as execution-facing utilities
+
+For the current phase, the benchmark-aware local validation rule is:
+
+- every n8n-scheduled cycle must emit `run_id`, `cycle_id`, and `benchmark_variant`
+- those fields must be passed into `run-once`, `review-resume`, `risk`, and `transmit-limit-order`
+- local validation is only complete when `/system/benchmark/cycle/{cycle_id}` shows the full trail
 
 That is cleaner, more durable, and much closer to how the current codebase is already built.

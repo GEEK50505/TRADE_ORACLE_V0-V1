@@ -1,0 +1,497 @@
+{
+  "id": "trade_oracle_openclaw_review_resume_manual_validation_v1",
+  "name": "TRADE_ORACLE OpenClaw Review Resume Manual Validation",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trg-manual-resume",
+      "name": "TRG Manual Resume Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const now = new Date();\nconst threadId = ($env.TRADE_ORACLE_REVIEW_THREAD_ID || '').trim();\nif (!threadId) {\n  throw new Error('TRADE_ORACLE_REVIEW_THREAD_ID is required. Set it to a real pending-review thread before running the resume workflow.');\n}\nconst runId = ($env.TRADE_ORACLE_REVIEW_RUN_ID || `review_${now.getTime()}`).trim();\nconst cycleId = ($env.TRADE_ORACLE_REVIEW_CYCLE_ID || runId).trim();\nreturn [{json:{run_id:runId,cycle_id:cycleId,benchmark_variant:$env.TRADE_ORACLE_BENCHMARK_VARIANT||'super_brain',execution_backend:$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',scheduled_at_utc:now.toISOString(),platform_base_url:$env.TRADE_ORACLE_PLATFORM_BASE_URL||'http://host.docker.internal:8000',platform_api_key:$env.TRADE_ORACLE_PLATFORM_API_KEY||'',thread_id:threadId,human_decision:{action:$env.TRADE_ORACLE_REVIEW_ACTION||'APPROVE',reviewer:$env.TRADE_ORACLE_REVIEWER||'openclaw',notes:$env.TRADE_ORACLE_REVIEW_NOTES||'Approved from n8n manual resume validation.'},account_state:{current_balance:Number($env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number($env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number($env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0)}}}];"
+      },
+      "id": "ctx-resume-runtime",
+      "name": "CTX Resolve Resume Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.platform_base_url + '/system/health' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "precheck-resume-health",
+      "name": "PRECHECK Platform Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const runtime=$('CTX Resolve Resume Context').first().json;const health=$input.first().json;return [{json:{...runtime,precheck_health:health,review_resume_request:{run_id:runtime.run_id,cycle_id:runtime.cycle_id,benchmark_variant:runtime.benchmark_variant,thread_id:runtime.thread_id,human_decision:runtime.human_decision}}}];"
+      },
+      "id": "brain-build-resume-request",
+      "name": "BRAIN Build Review Resume Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.platform_base_url + '/superbrain/review-resume' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.review_resume_request }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "brain-review-resume",
+      "name": "BRAIN Review Resume",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1260,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const runtime=$('BRAIN Build Review Resume Request').first().json;const response=$input.first().json;const result=response.result||{};const candidate=result.candidate||null;return [{json:{...runtime,response,result,candidate,run_id:result.run_id||runtime.run_id||'',cycle_id:result.cycle_id||runtime.cycle_id||'',benchmark_variant:result.benchmark_variant||runtime.benchmark_variant||'super_brain',candidate_ready:Boolean(candidate&&candidate.execute_trade===true&&candidate.execution_status==='approved')}}];"
+      },
+      "id": "brain-normalize-resume",
+      "name": "BRAIN Normalize Resume Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.candidate_ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-resume-approved-candidate",
+      "name": "EXEC Candidate Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1780,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;const candidate=item.candidate;return [{json:{...item,risk_request:{symbol:candidate?.symbol||'',current_balance:Number(item.account_state?.current_balance||$env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number(item.account_state?.highest_equity||$env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number(item.account_state?.active_trades_count||$env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0),entry_price:Number(candidate?.position_sizing?.entry_price||candidate?.entry_price||0),atr:Number(candidate?.position_sizing?.atr||candidate?.atr||0),direction:candidate?.direction||candidate?.final_decision||'BUY',run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain'}}}];"
+      },
+      "id": "risk-build-resume",
+      "name": "RISK Build Recheck Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TRADE_ORACLE_PLATFORM_BASE_URL || 'http://host.docker.internal:8000') + '/services/ops/ops/risk/evaluate' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.risk_request }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "risk-call-resume",
+      "name": "RISK Optional Recheck",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2300,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.result.can_open_new_trade }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-resume-risk-passed",
+      "name": "RISK Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2560,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const upstream=$('RISK Build Recheck Request').first().json;const candidate=upstream.candidate;const risk=$input.first().json.result||{};const size=risk.position_size||candidate?.position_sizing||{};let mt5SymbolMap={};try{mt5SymbolMap=JSON.parse($env.MT5_SYMBOL_MAP||'{}');}catch{mt5SymbolMap={};}return [{json:{run_id:upstream.run_id||'',cycle_id:upstream.cycle_id||'',benchmark_variant:upstream.benchmark_variant||'super_brain',execution_request:{execution_backend:upstream.execution_backend||$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',run_id:upstream.run_id||'',cycle_id:upstream.cycle_id||'',benchmark_variant:upstream.benchmark_variant||'super_brain',broker_id:$env.MATCH_TRADER_BROKER_ID||'',email:$env.MATCH_TRADER_USER||'',password:$env.MATCH_TRADER_PASS||'',base_url:$env.MATCH_TRADER_BASE_URL||'https://mtr-api.match-trader.com',system_uuid:$env.MATCH_TRADER_SYSTEM_UUID||'',mt5_login:$env.MT5_LOGIN||'',mt5_password:$env.MT5_PASSWORD||'',mt5_server:$env.MT5_SERVER||'',mt5_terminal_path:$env.MT5_TERMINAL_PATH||'',mt5_symbol_suffix:$env.MT5_SYMBOL_SUFFIX||'',mt5_symbol_map:mt5SymbolMap,symbol:candidate?.symbol||'',direction:candidate?.direction||candidate?.final_decision||'BUY',size:Number(size.tokens||candidate?.size_tokens||0),size_mode:'units',limit_price:Number(size.entry_price||candidate?.entry_price||0),stop_loss:Number(size.stop_loss||candidate?.stop_loss||0),take_profit:Number(candidate?.take_profit||size.tp1||size.take_profit||0)}}}];"
+      },
+      "id": "exec-build-resume",
+      "name": "EXEC Build Order Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2820,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TRADE_ORACLE_PLATFORM_BASE_URL || 'http://host.docker.internal:8000') + '/services/ops/ops/execution/transmit-limit-order' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.execution_request }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "exec-call-resume",
+      "name": "EXEC Transmit Limit Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'resume_no_trade',payload:item}}];"
+      },
+      "id": "alert-resume-no-trade",
+      "name": "ALERT No Trade Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'resume_risk_rejected',payload:item}}];"
+      },
+      "id": "alert-resume-risk-rejected",
+      "name": "ALERT Risk Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2820,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'resume_execution_result',payload:item}}];"
+      },
+      "id": "alert-resume-exec-result",
+      "name": "ALERT Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3340,
+        160
+      ]
+    }
+  ],
+  "connections": {
+    "TRG Manual Resume Trigger": {
+      "main": [
+        [
+          {
+            "node": "CTX Resolve Resume Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CTX Resolve Resume Context": {
+      "main": [
+        [
+          {
+            "node": "PRECHECK Platform Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PRECHECK Platform Health": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Build Review Resume Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Build Review Resume Request": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Review Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Review Resume": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Normalize Resume Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Normalize Resume Result": {
+      "main": [
+        [
+          {
+            "node": "EXEC Candidate Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Candidate Approved?": {
+      "main": [
+        [
+          {
+            "node": "RISK Build Recheck Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ALERT No Trade Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Build Recheck Request": {
+      "main": [
+        [
+          {
+            "node": "RISK Optional Recheck",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Optional Recheck": {
+      "main": [
+        [
+          {
+            "node": "RISK Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Passed?": {
+      "main": [
+        [
+          {
+            "node": "EXEC Build Order Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ALERT Risk Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Build Order Payload": {
+      "main": [
+        [
+          {
+            "node": "EXEC Transmit Limit Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Transmit Limit Order": {
+      "main": [
+        [
+          {
+            "node": "ALERT Execution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "trade-oracle-openclaw-review-resume-manual-validation-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

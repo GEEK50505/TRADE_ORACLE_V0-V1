@@ -1,0 +1,1117 @@
+{
+  "id": "trade_oracle_telegram_review_webhook_v1",
+  "name": "TRADE_ORACLE Telegram Review Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "callback_query"
+        ]
+      },
+      "id": "trg-telegram-review",
+      "name": "TRG Telegram Review Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const update=$input.first().json;const callback=update.callback_query||{};const rawData=String(callback.data||'').trim();if(!rawData){throw new Error('Telegram callback query is missing callback data.');}const [actionToken,...rest]=rawData.split(':');const threadId=rest.join(':').trim();if(!threadId){throw new Error('Telegram callback data does not include a thread id.');}const action=String(actionToken||'').trim().toLowerCase();if(!['approve','reject'].includes(action)){throw new Error(`Unsupported Telegram review action: ${actionToken}`);}const reviewer=callback.from?.username?`@${callback.from.username}`:(callback.from?.first_name||'telegram_reviewer');const notes=`${action==='approve'?'Approved':'Rejected'} from Telegram by ${reviewer}.`;return [{json:{thread_id:threadId,review_action:action==='approve'?'APPROVE':'REJECT',reviewer,review_notes:notes,callback_query_id:String(callback.id||''),telegram_chat_id:String(callback.message?.chat?.id||''),telegram_message_id:String(callback.message?.message_id||''),platform_base_url:$env.TRADE_ORACLE_PLATFORM_BASE_URL||'http://host.docker.internal:8000',platform_api_key:$env.TRADE_ORACLE_PLATFORM_API_KEY||'',execution_backend:$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',benchmark_variant:$env.TRADE_ORACLE_BENCHMARK_VARIANT||'super_brain',received_at_utc:new Date().toISOString()}}];"
+      },
+      "id": "ctx-parse-callback",
+      "name": "CTX Parse Telegram Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.platform_base_url + '/system/health' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.thread_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "precheck-review-health",
+      "name": "PRECHECK Platform Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        760,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $env.TRADE_ORACLE_N8N_REVIEW_QUEUE_TABLE || 'TRADE_ORACLE Pending Reviews' }}",
+        "columns": {
+          "column": [
+            {
+              "name": "thread_id",
+              "type": "string"
+            },
+            {
+              "name": "cycle_id",
+              "type": "string"
+            },
+            {
+              "name": "run_id",
+              "type": "string"
+            },
+            {
+              "name": "benchmark_variant",
+              "type": "string"
+            },
+            {
+              "name": "review_status",
+              "type": "string"
+            },
+            {
+              "name": "review_action",
+              "type": "string"
+            },
+            {
+              "name": "telegram_chat_id",
+              "type": "string"
+            },
+            {
+              "name": "telegram_message_id",
+              "type": "string"
+            },
+            {
+              "name": "symbol",
+              "type": "string"
+            },
+            {
+              "name": "direction",
+              "type": "string"
+            },
+            {
+              "name": "candidate_json",
+              "type": "string"
+            },
+            {
+              "name": "review_context_json",
+              "type": "string"
+            },
+            {
+              "name": "account_state_json",
+              "type": "string"
+            },
+            {
+              "name": "created_at_utc",
+              "type": "string"
+            },
+            {
+              "name": "updated_at_utc",
+              "type": "string"
+            },
+            {
+              "name": "reviewer",
+              "type": "string"
+            },
+            {
+              "name": "review_notes",
+              "type": "string"
+            },
+            {
+              "name": "cycle_outcome",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "state-ensure-review-table",
+      "name": "STATE Ensure Pending Review Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1020,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "={{ $env.TRADE_ORACLE_N8N_FORWARD_JOURNAL_TABLE || 'TRADE_ORACLE Forward Test Journal' }}",
+        "columns": {
+          "column": [
+            {
+              "name": "cycle_id",
+              "type": "string"
+            },
+            {
+              "name": "run_id",
+              "type": "string"
+            },
+            {
+              "name": "benchmark_variant",
+              "type": "string"
+            },
+            {
+              "name": "thread_id",
+              "type": "string"
+            },
+            {
+              "name": "workflow_name",
+              "type": "string"
+            },
+            {
+              "name": "stage",
+              "type": "string"
+            },
+            {
+              "name": "outcome",
+              "type": "string"
+            },
+            {
+              "name": "symbol",
+              "type": "string"
+            },
+            {
+              "name": "direction",
+              "type": "string"
+            },
+            {
+              "name": "pending_review",
+              "type": "boolean"
+            },
+            {
+              "name": "transmit_succeeded",
+              "type": "boolean"
+            },
+            {
+              "name": "benchmark_event_count",
+              "type": "number"
+            },
+            {
+              "name": "thread_ids_json",
+              "type": "string"
+            },
+            {
+              "name": "summary_json",
+              "type": "string"
+            },
+            {
+              "name": "updated_at_utc",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "state-ensure-journal-table",
+      "name": "STATE Ensure Forward Journal Table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1280,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "mode": "name",
+          "value": "={{ $env.TRADE_ORACLE_N8N_REVIEW_QUEUE_TABLE || 'TRADE_ORACLE Pending Reviews' }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "thread_id",
+              "condition": "eq",
+              "keyValue": "={{ $('CTX Parse Telegram Callback').first().json.thread_id }}"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1,
+        "orderBy": false
+      },
+      "id": "state-get-pending-row",
+      "name": "STATE Lookup Pending Review Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CTX Parse Telegram Callback').first().json.platform_base_url + '/system/audit/thread/' + $('CTX Parse Telegram Callback').first().json.thread_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $('CTX Parse Telegram Callback').first().json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $('CTX Parse Telegram Callback').first().json.thread_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "audit-fetch-thread",
+      "name": "AUDIT Fetch Review Thread",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const trigger=$('CTX Parse Telegram Callback').first().json;const rowItems=$('STATE Lookup Pending Review Row').all();const stored=rowItems[0]?.json||{};const audit=$input.first().json;const auditEvents=Array.isArray(audit.events)?audit.events:[];const latest=auditEvents[0]||{};const safeParse=(value)=>{if(!value||typeof value!=='string'){return {};}try{return JSON.parse(value);}catch{return {};}};const storedCandidate=safeParse(stored.candidate_json);const storedReviewContext=safeParse(stored.review_context_json);const storedAccountState=safeParse(stored.account_state_json);const evaluationPayload=latest.payload||{};const rawSetup=evaluationPayload.raw_setup||storedCandidate.raw_setup||{};const runId=stored.run_id||latest.run_id||`review_${Date.now()}`;const cycleId=stored.cycle_id||runId;const accountState={current_balance:Number(storedAccountState.current_balance||rawSetup.account_state?.current_balance||$env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number(storedAccountState.highest_equity||rawSetup.account_state?.highest_equity||$env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number(storedAccountState.active_trades_count||rawSetup.account_state?.active_trades_count||$env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0)};return [{json:{run_id:runId,cycle_id:cycleId,benchmark_variant:stored.benchmark_variant||trigger.benchmark_variant||'super_brain',execution_backend:trigger.execution_backend||$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',platform_base_url:trigger.platform_base_url,platform_api_key:trigger.platform_api_key,thread_id:trigger.thread_id,telegram_chat_id:trigger.telegram_chat_id,telegram_message_id:trigger.telegram_message_id,callback_query_id:trigger.callback_query_id,human_decision:{action:trigger.review_action,reviewer:trigger.reviewer,notes:trigger.review_notes},candidate:Object.keys(storedCandidate).length?storedCandidate:(evaluationPayload.candidate||null),stored_review_context:storedReviewContext,account_state:accountState,created_at_utc:stored.created_at_utc||trigger.received_at_utc,audit_events:auditEvents}}];"
+      },
+      "id": "ctx-resolve-review-context",
+      "name": "CTX Resolve Review Resume Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "operation": "answerQuery",
+        "queryId": "={{ $json.callback_query_id }}",
+        "additionalFields": {
+          "text": "Processing review decision...",
+          "show_alert": false
+        }
+      },
+      "id": "alert-ack-callback",
+      "name": "ALERT Ack Telegram Callback",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2060,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const runtime=$('CTX Resolve Review Resume Context').first().json;return [{json:{...runtime,review_resume_request:{run_id:runtime.run_id,cycle_id:runtime.cycle_id,benchmark_variant:runtime.benchmark_variant,thread_id:runtime.thread_id,human_decision:runtime.human_decision}}}];"
+      },
+      "id": "brain-build-resume-request",
+      "name": "BRAIN Build Review Resume Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.platform_base_url + '/superbrain/review-resume' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.review_resume_request }}",
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "brain-review-resume",
+      "name": "BRAIN Review Resume",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2580,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const runtime=$('BRAIN Build Review Resume Request').first().json;const response=$input.first().json;const result=response.result||{};const candidate=result.candidate||null;return [{json:{...runtime,response,result,candidate,run_id:result.run_id||runtime.run_id||'',cycle_id:result.cycle_id||runtime.cycle_id||'',benchmark_variant:result.benchmark_variant||runtime.benchmark_variant||'super_brain',candidate_ready:Boolean(candidate&&candidate.execute_trade===true&&candidate.execution_status==='approved')}}];"
+      },
+      "id": "brain-normalize-resume",
+      "name": "BRAIN Normalize Resume Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2840,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.candidate_ready }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-resume-approved-candidate",
+      "name": "EXEC Candidate Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3100,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;const candidate=item.candidate;return [{json:{...item,thread_id:candidate?.thread_id||item.thread_id||'',risk_request:{symbol:candidate?.symbol||'',current_balance:Number(item.account_state?.current_balance||$env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number(item.account_state?.highest_equity||$env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number(item.account_state?.active_trades_count||$env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0),entry_price:Number(candidate?.position_sizing?.entry_price||candidate?.entry_price||0),atr:Number(candidate?.position_sizing?.atr||candidate?.atr||0),direction:candidate?.direction||candidate?.final_decision?.decision||'BUY',run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain'}}}];"
+      },
+      "id": "risk-build-resume",
+      "name": "RISK Build Recheck Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TRADE_ORACLE_PLATFORM_BASE_URL || 'http://host.docker.internal:8000') + '/services/ops/ops/risk/evaluate' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.risk_request }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "risk-call-resume",
+      "name": "RISK Optional Recheck",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3620,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.result.can_open_new_trade }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-resume-risk-passed",
+      "name": "RISK Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3880,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const upstream=$('RISK Build Recheck Request').first().json;const candidate=upstream.candidate;const risk=$input.first().json.result||{};const size=risk.position_size||candidate?.position_sizing||{};let mt5SymbolMap={};try{mt5SymbolMap=JSON.parse($env.MT5_SYMBOL_MAP||'{}');}catch{mt5SymbolMap={};}return [{json:{run_id:upstream.run_id||'',cycle_id:upstream.cycle_id||'',thread_id:upstream.thread_id||'',benchmark_variant:upstream.benchmark_variant||'super_brain',execution_request:{execution_backend:upstream.execution_backend||$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',run_id:upstream.run_id||'',cycle_id:upstream.cycle_id||'',benchmark_variant:upstream.benchmark_variant||'super_brain',broker_id:$env.MATCH_TRADER_BROKER_ID||'',email:$env.MATCH_TRADER_USER||'',password:$env.MATCH_TRADER_PASS||'',base_url:$env.MATCH_TRADER_BASE_URL||'https://mtr-api.match-trader.com',system_uuid:$env.MATCH_TRADER_SYSTEM_UUID||'',mt5_login:$env.MT5_LOGIN||'',mt5_password:$env.MT5_PASSWORD||'',mt5_server:$env.MT5_SERVER||'',mt5_terminal_path:$env.MT5_TERMINAL_PATH||'',mt5_symbol_suffix:$env.MT5_SYMBOL_SUFFIX||'',mt5_symbol_map:mt5SymbolMap,symbol:candidate?.symbol||'',direction:candidate?.direction||candidate?.final_decision?.decision||'BUY',size:Number(size.tokens||candidate?.size_tokens||0),size_mode:'units',limit_price:Number(size.entry_price||candidate?.entry_price||0),stop_loss:Number(size.stop_loss||candidate?.stop_loss||0),take_profit:Number(candidate?.take_profit||size.tp1||size.take_profit||0)}}}];"
+      },
+      "id": "exec-build-resume",
+      "name": "EXEC Build Order Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4140,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TRADE_ORACLE_PLATFORM_BASE_URL || 'http://host.docker.internal:8000') + '/services/ops/ops/execution/transmit-limit-order' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.execution_request }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "exec-call-resume",
+      "name": "EXEC Transmit Limit Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4400,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;const candidate=item.candidate||null;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',thread_id:item.thread_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'resume_no_trade',cycle_outcome:'resume_no_trade',symbol:candidate?.symbol||'',direction:candidate?.direction||candidate?.final_decision?.decision||'',candidate}}];"
+      },
+      "id": "alert-resume-no-trade",
+      "name": "ALERT No Trade Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const upstream=$('RISK Build Recheck Request').first().json;const item=$input.first().json;return [{json:{run_id:upstream.run_id||item.run_id||'',cycle_id:upstream.cycle_id||item.cycle_id||'',thread_id:upstream.thread_id||'',benchmark_variant:upstream.benchmark_variant||item.benchmark_variant||'super_brain',event_type:'resume_risk_rejected',cycle_outcome:'resume_risk_rejected',symbol:upstream.candidate?.symbol||'',direction:upstream.candidate?.direction||upstream.candidate?.final_decision?.decision||'',payload:item,candidate:upstream.candidate||null}}];"
+      },
+      "id": "alert-resume-risk-rejected",
+      "name": "ALERT Risk Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4140,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const upstream=$('EXEC Build Order Payload').first().json;const item=$input.first().json;return [{json:{run_id:upstream.run_id||item.run_id||'',cycle_id:upstream.cycle_id||item.cycle_id||'',thread_id:upstream.thread_id||'',benchmark_variant:upstream.benchmark_variant||item.benchmark_variant||'super_brain',event_type:'resume_execution_result',cycle_outcome:'resume_execution_result',symbol:upstream.execution_request?.symbol||'',direction:upstream.execution_request?.direction||'',payload:item,execution_request:upstream.execution_request||{},candidate:upstream.candidate||null}}];"
+      },
+      "id": "alert-resume-exec-result",
+      "name": "ALERT Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const resolved=$('CTX Resolve Review Resume Context').first().json;const item=$input.first().json;const candidate=item.candidate||resolved.candidate||null;return [{json:{thread_id:resolved.thread_id||item.thread_id||'',cycle_id:resolved.cycle_id||item.cycle_id||'',run_id:resolved.run_id||item.run_id||'',benchmark_variant:resolved.benchmark_variant||item.benchmark_variant||'super_brain',review_status:item.event_type||'resolved',review_action:resolved.human_decision?.action||'APPROVE',telegram_chat_id:String(resolved.telegram_chat_id||''),telegram_message_id:String(resolved.telegram_message_id||''),symbol:item.symbol||candidate?.symbol||'',direction:item.direction||candidate?.direction||candidate?.final_decision?.decision||'',candidate_json:JSON.stringify(candidate||{}),review_context_json:JSON.stringify(resolved.stored_review_context||{}),account_state_json:JSON.stringify(resolved.account_state||{}),created_at_utc:resolved.created_at_utc||new Date().toISOString(),updated_at_utc:new Date().toISOString(),reviewer:resolved.human_decision?.reviewer||'telegram',review_notes:resolved.human_decision?.notes||'',cycle_outcome:item.cycle_outcome||item.event_type||'resolved'}}];"
+      },
+      "id": "state-build-review-outcome-row",
+      "name": "STATE Build Review Outcome Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4920,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "upsert",
+        "dataTableId": {
+          "mode": "name",
+          "value": "={{ $env.TRADE_ORACLE_N8N_REVIEW_QUEUE_TABLE || 'TRADE_ORACLE Pending Reviews' }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "thread_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.thread_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": null
+        },
+        "options": {}
+      },
+      "id": "state-upsert-review-outcome-row",
+      "name": "STATE Upsert Review Outcome Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        5180,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',thread_id:item.thread_id||'',benchmark_variant:item.benchmark_variant||'super_brain',platform_base_url:$env.TRADE_ORACLE_PLATFORM_BASE_URL||'http://host.docker.internal:8000',platform_api_key:$env.TRADE_ORACLE_PLATFORM_API_KEY||'',telegram_chat_id:item.telegram_chat_id||'',telegram_message_id:item.telegram_message_id||'',event_type:item.review_status||item.cycle_outcome||'resolved',cycle_outcome:item.cycle_outcome||item.review_status||'resolved',symbol:item.symbol||'',direction:item.direction||''}}];"
+      },
+      "id": "journal-build-context",
+      "name": "JOURNAL Build Cycle Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5440,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.platform_base_url + '/system/benchmark/cycle/' + $json.cycle_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Trade-Oracle-API-Key",
+              "value": "={{ $json.platform_api_key }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "journal-fetch-benchmark",
+      "name": "JOURNAL Fetch Benchmark Cycle",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5700,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const context=$('JOURNAL Build Cycle Context').first().json;const benchmark=$input.first().json;const events=Array.isArray(benchmark.events)?benchmark.events:[];const threadIds=[...new Set(events.map((event)=>String(event.thread_id||'')).filter(Boolean))];const transmitEvent=events.find((event)=>event.event_type==='order_transmit_result')||null;const transmitSucceeded=Boolean(transmitEvent&&String(transmitEvent.decision||'').toLowerCase()==='transmitted');return [{json:{cycle_id:context.cycle_id||'',run_id:context.run_id||'',benchmark_variant:context.benchmark_variant||'super_brain',thread_id:context.thread_id||threadIds[0]||'',workflow_name:'TRADE_ORACLE Telegram Review Webhook',stage:context.event_type||'',outcome:context.cycle_outcome||context.event_type||'',symbol:context.symbol||String(transmitEvent?.symbol||'')||'',direction:context.direction||'',pending_review:false,transmit_succeeded:transmitSucceeded,benchmark_event_count:events.length,thread_ids_json:JSON.stringify(threadIds),summary_json:JSON.stringify({event_types:events.map((event)=>event.event_type),decisions:events.map((event)=>event.decision),statuses:events.map((event)=>event.status)}),updated_at_utc:new Date().toISOString()}}];"
+      },
+      "id": "journal-build-row",
+      "name": "JOURNAL Build Forward Test Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5960,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "upsert",
+        "dataTableId": {
+          "mode": "name",
+          "value": "={{ $env.TRADE_ORACLE_N8N_FORWARD_JOURNAL_TABLE || 'TRADE_ORACLE Forward Test Journal' }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "cycle_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.cycle_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": null
+        },
+        "options": {}
+      },
+      "id": "state-upsert-journal",
+      "name": "STATE Upsert Forward Journal Row",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        6220,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const context=$('CTX Resolve Review Resume Context').first().json;const journal=$('JOURNAL Build Forward Test Row').first().json;return [{json:{chat_id:context.telegram_chat_id||'',message_id:context.telegram_message_id||'',text:'TRADE_ORACLE review resolved\\nAction: '+(context.human_decision?.action||'n/a')+'\\nOutcome: '+(journal.outcome||'unknown')+'\\nSymbol: '+(journal.symbol||'n/a')+'\\nDirection: '+(journal.direction||'n/a')+'\\nCycle: '+(journal.cycle_id||'n/a')+'\\nRun: '+(journal.run_id||'n/a')+'\\nThread: '+(context.thread_id||'n/a')+'\\nTransmitted: '+String(Boolean(journal.transmit_succeeded))}}];"
+      },
+      "id": "alert-build-resolution-message",
+      "name": "ALERT Build Telegram Resolution Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6480,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "editMessageText",
+        "messageType": "message",
+        "chatId": "={{ $json.chat_id }}",
+        "messageId": "={{ $json.message_id }}",
+        "text": "={{ $json.text }}",
+        "replyMarkup": "none"
+      },
+      "id": "alert-edit-resolution-message",
+      "name": "ALERT Edit Telegram Review Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        6740,
+        280
+      ]
+    }
+  ],
+  "connections": {
+    "TRG Telegram Review Trigger": {
+      "main": [
+        [
+          {
+            "node": "CTX Parse Telegram Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CTX Parse Telegram Callback": {
+      "main": [
+        [
+          {
+            "node": "PRECHECK Platform Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PRECHECK Platform Health": {
+      "main": [
+        [
+          {
+            "node": "STATE Ensure Pending Review Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STATE Ensure Pending Review Table": {
+      "main": [
+        [
+          {
+            "node": "STATE Ensure Forward Journal Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STATE Ensure Forward Journal Table": {
+      "main": [
+        [
+          {
+            "node": "STATE Lookup Pending Review Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "AUDIT Fetch Review Thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AUDIT Fetch Review Thread": {
+      "main": [
+        [
+          {
+            "node": "CTX Resolve Review Resume Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CTX Resolve Review Resume Context": {
+      "main": [
+        [
+          {
+            "node": "ALERT Ack Telegram Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ALERT Ack Telegram Callback": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Build Review Resume Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Build Review Resume Request": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Review Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Review Resume": {
+      "main": [
+        [
+          {
+            "node": "BRAIN Normalize Resume Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BRAIN Normalize Resume Result": {
+      "main": [
+        [
+          {
+            "node": "EXEC Candidate Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Candidate Approved?": {
+      "main": [
+        [
+          {
+            "node": "RISK Build Recheck Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ALERT No Trade Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Build Recheck Request": {
+      "main": [
+        [
+          {
+            "node": "RISK Optional Recheck",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Optional Recheck": {
+      "main": [
+        [
+          {
+            "node": "RISK Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RISK Passed?": {
+      "main": [
+        [
+          {
+            "node": "EXEC Build Order Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ALERT Risk Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Build Order Payload": {
+      "main": [
+        [
+          {
+            "node": "EXEC Transmit Limit Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EXEC Transmit Limit Order": {
+      "main": [
+        [
+          {
+            "node": "ALERT Execution Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ALERT No Trade Summary": {
+      "main": [
+        [
+          {
+            "node": "STATE Build Review Outcome Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ALERT Risk Rejected": {
+      "main": [
+        [
+          {
+            "node": "STATE Build Review Outcome Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ALERT Execution Result": {
+      "main": [
+        [
+          {
+            "node": "STATE Build Review Outcome Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STATE Build Review Outcome Row": {
+      "main": [
+        [
+          {
+            "node": "STATE Upsert Review Outcome Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STATE Upsert Review Outcome Row": {
+      "main": [
+        [
+          {
+            "node": "JOURNAL Build Cycle Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JOURNAL Build Cycle Context": {
+      "main": [
+        [
+          {
+            "node": "JOURNAL Fetch Benchmark Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JOURNAL Fetch Benchmark Cycle": {
+      "main": [
+        [
+          {
+            "node": "JOURNAL Build Forward Test Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JOURNAL Build Forward Test Row": {
+      "main": [
+        [
+          {
+            "node": "STATE Upsert Forward Journal Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STATE Upsert Forward Journal Row": {
+      "main": [
+        [
+          {
+            "node": "ALERT Build Telegram Resolution Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ALERT Build Telegram Resolution Message": {
+      "main": [
+        [
+          {
+            "node": "ALERT Edit Telegram Review Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "versionId": "trade-oracle-telegram-review-webhook-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

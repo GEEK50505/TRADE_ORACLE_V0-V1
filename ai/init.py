@@ -1,6 +1,14 @@
 """AI package exports for TRADE_ORACLE."""
 
 from .trade_oracle_audit import TradeOracleAuditEvent, TradeOracleAuditStore
+from .trade_oracle_benchmark import TradeOracleBenchmarkEvent, TradeOracleBenchmarkStore
+from .trade_oracle_storage import (
+    SUPPORTED_TRADE_ORACLE_STORAGE_BACKENDS,
+    TradeOracleAuditStoreProtocol,
+    TradeOracleBenchmarkStoreProtocol,
+    build_trade_oracle_audit_store,
+    build_trade_oracle_benchmark_store,
+)
 from .langgraph_orchestrator import (
     LangGraphExecutionCandidate,
     LangGraphEvaluationResult,
@@ -55,6 +63,13 @@ __all__ = [
     "TradeOracleMCPHttpClient",
     "TradeOracleAuditEvent",
     "TradeOracleAuditStore",
+    "TradeOracleAuditStoreProtocol",
+    "TradeOracleBenchmarkEvent",
+    "TradeOracleBenchmarkStore",
+    "TradeOracleBenchmarkStoreProtocol",
+    "SUPPORTED_TRADE_ORACLE_STORAGE_BACKENDS",
+    "build_trade_oracle_audit_store",
+    "build_trade_oracle_benchmark_store",
     "LangGraphEvaluationResult",
     "build_initial_state",
     "hydrate_account_state_context",

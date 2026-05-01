@@ -1,4 +1,5 @@
 {
+  "id": "trade_oracle_platform_skeleton_v1",
   "name": "TRADE_ORACLE 4H Master Orchestrator Platform Skeleton",
   "nodes": [
     {
@@ -25,7 +26,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "const now = new Date();\nreturn [{json:{run_id:`trade_oracle_${now.getTime()}`,scheduled_at_utc:now.toISOString(),platform_base_url:$env.TRADE_ORACLE_PLATFORM_BASE_URL||'http://127.0.0.1:8000',platform_api_key:$env.TRADE_ORACLE_PLATFORM_API_KEY||'',watchlist:['BTC/USDT','ETH/USDT','SOL/USDT','XRP/USDT','DOGE/USDT','AVAX/USDT'],auto_approve:false,enable_live_llm:false,account_state:{current_balance:Number($env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number($env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number($env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0)}}}];"
+        "jsCode": "const now = new Date();\nconst runId = `trade_oracle_${now.getTime()}`;\nconst cycleId = `cycle_${now.getTime()}`;\nreturn [{json:{run_id:runId,cycle_id:cycleId,benchmark_variant:$env.TRADE_ORACLE_BENCHMARK_VARIANT||'super_brain',execution_backend:$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',scheduled_at_utc:now.toISOString(),platform_base_url:$env.TRADE_ORACLE_PLATFORM_BASE_URL||'http://127.0.0.1:8000',platform_api_key:$env.TRADE_ORACLE_PLATFORM_API_KEY||'',watchlist:['BTC/USDT','ETH/USDT','SOL/USDT','XRP/USDT','DOGE/USDT','AVAX/USDT'],auto_approve:false,enable_live_llm:false,account_state:{current_balance:Number($env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number($env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number($env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0)}}}];"
       },
       "id": "ctx-runtime",
       "name": "CTX Resolve Runtime Context",
@@ -70,7 +71,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "const item=$input.first().json;return [{json:{...item,super_brain_request:{watchlist:item.watchlist,account_state:item.account_state,auto_approve:item.auto_approve,enable_live_llm:item.enable_live_llm}}}];"
+        "jsCode": "const item=$input.first().json;return [{json:{...item,super_brain_request:{watchlist:item.watchlist,account_state:item.account_state,auto_approve:item.auto_approve,enable_live_llm:item.enable_live_llm,run_id:item.run_id,cycle_id:item.cycle_id,benchmark_variant:item.benchmark_variant}}}];"
       },
       "id": "brain-build-request",
       "name": "BRAIN Build Run Once Request",
@@ -122,7 +123,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "const response=$input.first().json;const result=response.result||{};const evaluations=result.evaluations||[];const candidates=result.candidates||[];const pending=evaluations.filter((e)=>e.status==='pending_review');const topCandidate=candidates[0]||null;return [{json:{response,evaluations,candidates,pending_review_count:pending.length,first_pending_review:pending[0]||null,top_candidate:topCandidate,top_candidate_ready:Boolean(topCandidate&&topCandidate.execute_trade===true&&topCandidate.execution_status==='approved')}}];"
+        "jsCode": "const input=$input.first().json;const response=input;const result=response.result||{};const evaluations=result.evaluations||[];const candidates=result.candidates||[];const pending=evaluations.filter((e)=>e.status==='pending_review');const topCandidate=candidates[0]||null;return [{json:{...input,response,evaluations,candidates,run_id:result.run_id||input.run_id||'',cycle_id:result.cycle_id||input.cycle_id||'',benchmark_variant:result.benchmark_variant||input.benchmark_variant||'super_brain',pending_review_count:pending.length,first_pending_review:pending[0]||null,top_candidate:topCandidate,top_candidate_ready:Boolean(topCandidate&&topCandidate.execute_trade===true&&topCandidate.execution_status==='approved')}}];"
       },
       "id": "brain-normalize",
       "name": "BRAIN Normalize Result",
@@ -167,7 +168,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "const review=$input.first().json.first_pending_review;return [{json:{event_type:'pending_review',thread_id:review?.thread_id||'',review_context:review?.review_context||{},candidate:review?.candidate||null,operator_message:review?`OpenClaw review required for ${review.thread_id}`:'OpenClaw review required'}}];"
+        "jsCode": "const item=$input.first().json;const review=item.first_pending_review;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'pending_review',thread_id:review?.thread_id||'',review_context:review?.review_context||{},candidate:review?.candidate||null,operator_message:review?`OpenClaw review required for ${review.thread_id} (${item.cycle_id||'no-cycle'})`:'OpenClaw review required'}}];"
       },
       "id": "alert-review",
       "name": "ALERT Prepare OpenClaw Review",
@@ -213,7 +214,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "const candidate=$input.first().json.top_candidate;return [{json:{candidate,risk_request:{current_balance:Number($env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number($env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number($env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0),entry_price:Number(candidate?.position_sizing?.entry_price||0),atr:Number(candidate?.position_sizing?.atr||candidate?.atr||0),direction:candidate?.direction||candidate?.final_decision||'BUY'}}}];"
+        "jsCode": "const item=$input.first().json;const candidate=item.top_candidate;return [{json:{...item,candidate,risk_request:{symbol:candidate?.symbol||'',current_balance:Number(item.account_state?.current_balance||$env.TRADE_ORACLE_CURRENT_BALANCE||5200),highest_equity:Number(item.account_state?.highest_equity||$env.TRADE_ORACLE_HIGHEST_EQUITY||5300),active_trades_count:Number(item.account_state?.active_trades_count||$env.TRADE_ORACLE_ACTIVE_TRADES_COUNT||0),entry_price:Number(candidate?.position_sizing?.entry_price||candidate?.entry_price||0),atr:Number(candidate?.position_sizing?.atr||candidate?.atr||0),direction:candidate?.direction||candidate?.final_decision||'BUY',run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain'}}}];"
       },
       "id": "risk-build",
       "name": "RISK Build Recheck Request",
@@ -238,6 +239,10 @@
             {
               "name": "X-Trade-Oracle-API-Key",
               "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id || '' }}"
             }
           ]
         },
@@ -292,7 +297,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "const candidate=$('RISK Build Recheck Request').first().json.candidate;const risk=$input.first().json.result||{};const size=risk.position_size||candidate?.position_sizing||{};return [{json:{execution_request:{broker_id:$env.MATCH_TRADER_BROKER_ID||'',email:$env.MATCH_TRADER_USER||'',password:$env.MATCH_TRADER_PASS||'',base_url:$env.MATCH_TRADER_BASE_URL||'https://mtr-api.match-trader.com',system_uuid:$env.MATCH_TRADER_SYSTEM_UUID||'',symbol:candidate?.symbol||'',direction:candidate?.direction||candidate?.final_decision||'BUY',size:Number(size.tokens||0),limit_price:Number(size.entry_price||0),stop_loss:Number(size.stop_loss||0),take_profit:Number(size.tp1||0)}}}];"
+        "jsCode": "const upstream=$('RISK Build Recheck Request').first().json;const candidate=upstream.candidate;const risk=$input.first().json.result||{};const size=risk.position_size||candidate?.position_sizing||{};let mt5SymbolMap={};try{mt5SymbolMap=JSON.parse($env.MT5_SYMBOL_MAP||'{}');}catch{mt5SymbolMap={};}return [{json:{run_id:upstream.run_id||'',cycle_id:upstream.cycle_id||'',benchmark_variant:upstream.benchmark_variant||'super_brain',execution_request:{execution_backend:upstream.execution_backend||$env.TRADE_ORACLE_EXECUTION_BACKEND||'mt5',run_id:upstream.run_id||'',cycle_id:upstream.cycle_id||'',benchmark_variant:upstream.benchmark_variant||'super_brain',broker_id:$env.MATCH_TRADER_BROKER_ID||'',email:$env.MATCH_TRADER_USER||'',password:$env.MATCH_TRADER_PASS||'',base_url:$env.MATCH_TRADER_BASE_URL||'https://mtr-api.match-trader.com',system_uuid:$env.MATCH_TRADER_SYSTEM_UUID||'',mt5_login:$env.MT5_LOGIN||'',mt5_password:$env.MT5_PASSWORD||'',mt5_server:$env.MT5_SERVER||'',mt5_terminal_path:$env.MT5_TERMINAL_PATH||'',mt5_symbol_suffix:$env.MT5_SYMBOL_SUFFIX||'',mt5_symbol_map:mt5SymbolMap,symbol:candidate?.symbol||'',direction:candidate?.direction||candidate?.final_decision||'BUY',size:Number(size.tokens||candidate?.size_tokens||0),size_mode:'units',limit_price:Number(size.entry_price||candidate?.entry_price||0),stop_loss:Number(size.stop_loss||candidate?.stop_loss||0),take_profit:Number(candidate?.take_profit||size.tp1||size.take_profit||0)}}}];"
       },
       "id": "exec-build",
       "name": "EXEC Build Order Payload",
@@ -317,6 +322,10 @@
             {
               "name": "X-Trade-Oracle-API-Key",
               "value": "={{ $env.TRADE_ORACLE_PLATFORM_API_KEY || '' }}"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "={{ $json.run_id || '' }}"
             }
           ]
         },
@@ -340,7 +349,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "return [{json:{event_type:'risk_rejected',payload:$input.first().json}}];"
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'risk_rejected',payload:item}}];"
       },
       "id": "alert-risk-rejected",
       "name": "ALERT Risk Rejected",
@@ -355,7 +364,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "return [{json:{event_type:'execution_result',payload:$input.first().json}}];"
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'execution_result',payload:item}}];"
       },
       "id": "alert-exec-result",
       "name": "ALERT Execution Result",
@@ -370,7 +379,7 @@
       "parameters": {
         "language": "javaScript",
         "mode": "runOnceForAllItems",
-        "jsCode": "return [{json:{event_type:'no_trade',payload:$input.first().json}}];"
+        "jsCode": "const item=$input.first().json;return [{json:{run_id:item.run_id||'',cycle_id:item.cycle_id||'',benchmark_variant:item.benchmark_variant||'super_brain',event_type:'no_trade',payload:item}}];"
       },
       "id": "alert-no-trade",
       "name": "ALERT No Trade Summary",
