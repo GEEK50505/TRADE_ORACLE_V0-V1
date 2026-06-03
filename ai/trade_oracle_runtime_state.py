@@ -13,7 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from config import settings
 
-from .trade_oracle_supabase import build_trade_oracle_supabase_client, coerce_supabase_rows
+from .trade_oracle_supabase import (
+    build_trade_oracle_supabase_client,
+    coerce_supabase_rows,
+    execute_supabase_request,
+)
 
 
 def _utcnow_iso() -> str:
@@ -571,11 +575,12 @@ class TradeOracleSupabaseRuntimeStateStore:
 
     def get_pending_review(self, thread_id: str) -> TradeOraclePendingReviewRecord | None:
         rows = coerce_supabase_rows(
-            self.supabase_client.table(self.pending_review_table)
-            .select("*")
-            .eq("thread_id", thread_id)
-            .limit(1)
-            .execute()
+            execute_supabase_request(
+                lambda: self.supabase_client.table(self.pending_review_table)
+                .select("*")
+                .eq("thread_id", thread_id)
+                .limit(1)
+            )
         )
         return self._row_to_pending_review(rows[0]) if rows else None
 
@@ -591,7 +596,11 @@ class TradeOracleSupabaseRuntimeStateStore:
             query = query.eq("review_status", review_status)
         if symbol:
             query = query.eq("symbol", symbol)
-        rows = coerce_supabase_rows(query.order("updated_at_utc", desc=True).limit(max(1, int(limit))).execute())
+        rows = coerce_supabase_rows(
+            execute_supabase_request(
+                lambda: query.order("updated_at_utc", desc=True).limit(max(1, int(limit)))
+            )
+        )
         return [self._row_to_pending_review(row) for row in rows]
 
     def upsert_pending_review(
@@ -613,9 +622,8 @@ class TradeOracleSupabaseRuntimeStateStore:
                 "updated_at_utc": normalized.updated_at_utc or now,
             }
         )
-        response = (
-            self.supabase_client.table(self.pending_review_table)
-            .upsert(
+        response = execute_supabase_request(
+            lambda: self.supabase_client.table(self.pending_review_table).upsert(
                 {
                     "thread_id": normalized.thread_id,
                     "cycle_id": normalized.cycle_id,
@@ -638,7 +646,6 @@ class TradeOracleSupabaseRuntimeStateStore:
                 },
                 on_conflict="thread_id",
             )
-            .execute()
         )
         rows = coerce_supabase_rows(response)
         return self._row_to_pending_review(rows[0]) if rows else normalized
@@ -671,11 +678,12 @@ class TradeOracleSupabaseRuntimeStateStore:
 
     def get_forward_journal_entry(self, cycle_id: str) -> TradeOracleForwardJournalRecord | None:
         rows = coerce_supabase_rows(
-            self.supabase_client.table(self.forward_journal_table)
-            .select("*")
-            .eq("cycle_id", cycle_id)
-            .limit(1)
-            .execute()
+            execute_supabase_request(
+                lambda: self.supabase_client.table(self.forward_journal_table)
+                .select("*")
+                .eq("cycle_id", cycle_id)
+                .limit(1)
+            )
         )
         return self._row_to_forward_journal(rows[0]) if rows else None
 
@@ -691,7 +699,11 @@ class TradeOracleSupabaseRuntimeStateStore:
             query = query.eq("outcome", outcome)
         if pending_review is not None:
             query = query.eq("pending_review", pending_review)
-        rows = coerce_supabase_rows(query.order("updated_at_utc", desc=True).limit(max(1, int(limit))).execute())
+        rows = coerce_supabase_rows(
+            execute_supabase_request(
+                lambda: query.order("updated_at_utc", desc=True).limit(max(1, int(limit)))
+            )
+        )
         return [self._row_to_forward_journal(row) for row in rows]
 
     def upsert_forward_journal_entry(
@@ -704,9 +716,8 @@ class TradeOracleSupabaseRuntimeStateStore:
             else TradeOracleForwardJournalRecord.model_validate(record)
         )
         normalized = normalized.model_copy(update={"updated_at_utc": normalized.updated_at_utc or _utcnow_iso()})
-        response = (
-            self.supabase_client.table(self.forward_journal_table)
-            .upsert(
+        response = execute_supabase_request(
+            lambda: self.supabase_client.table(self.forward_journal_table).upsert(
                 {
                     "cycle_id": normalized.cycle_id,
                     "run_id": normalized.run_id,
@@ -726,18 +737,18 @@ class TradeOracleSupabaseRuntimeStateStore:
                 },
                 on_conflict="cycle_id",
             )
-            .execute()
         )
         rows = coerce_supabase_rows(response)
         return self._row_to_forward_journal(rows[0]) if rows else normalized
 
     def get_daemon_checkpoint(self, checkpoint_key: str) -> TradeOracleDaemonCheckpointRecord | None:
         rows = coerce_supabase_rows(
-            self.supabase_client.table(self.daemon_checkpoint_table)
-            .select("*")
-            .eq("checkpoint_key", checkpoint_key)
-            .limit(1)
-            .execute()
+            execute_supabase_request(
+                lambda: self.supabase_client.table(self.daemon_checkpoint_table)
+                .select("*")
+                .eq("checkpoint_key", checkpoint_key)
+                .limit(1)
+            )
         )
         return self._row_to_daemon_checkpoint(rows[0]) if rows else None
 
@@ -751,9 +762,8 @@ class TradeOracleSupabaseRuntimeStateStore:
             else TradeOracleDaemonCheckpointRecord.model_validate(record)
         )
         normalized = normalized.model_copy(update={"updated_at_utc": normalized.updated_at_utc or _utcnow_iso()})
-        response = (
-            self.supabase_client.table(self.daemon_checkpoint_table)
-            .upsert(
+        response = execute_supabase_request(
+            lambda: self.supabase_client.table(self.daemon_checkpoint_table).upsert(
                 {
                     "checkpoint_key": normalized.checkpoint_key,
                     "checkpoint_value": normalized.checkpoint_value,
@@ -761,7 +771,6 @@ class TradeOracleSupabaseRuntimeStateStore:
                 },
                 on_conflict="checkpoint_key",
             )
-            .execute()
         )
         rows = coerce_supabase_rows(response)
         return self._row_to_daemon_checkpoint(rows[0]) if rows else normalized

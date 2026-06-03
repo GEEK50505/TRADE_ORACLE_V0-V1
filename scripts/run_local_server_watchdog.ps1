@@ -81,12 +81,68 @@ function Test-RunningProcessFromPidFile {
     }
 
     try {
-        $pid = [int]((Get-Content -LiteralPath $PidFile -Raw).Trim())
-        return $null -ne (Get-Process -Id $pid -ErrorAction SilentlyContinue)
+        $targetProcessId = [int]((Get-Content -LiteralPath $PidFile -Raw).Trim())
+        return $null -ne (Get-Process -Id $targetProcessId -ErrorAction SilentlyContinue)
     }
     catch {
         return $false
     }
+}
+
+function Test-RunningProcessId {
+    param(
+        [int]$ProcessId
+    )
+
+    if ($ProcessId -le 0) {
+        return $false
+    }
+
+    return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+function Get-RuntimeLockProcessId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LockFile
+    )
+
+    if (-not (Test-Path -LiteralPath $LockFile)) {
+        return 0
+    }
+
+    try {
+        $payload = Get-Content -LiteralPath $LockFile -Raw | ConvertFrom-Json
+        return [int]($payload.pid | ForEach-Object { $_ })
+    }
+    catch {
+        return 0
+    }
+}
+
+function Test-DaemonHealthy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PidFile,
+        [Parameter(Mandatory = $true)]
+        [string]$RuntimeLockFile
+    )
+
+    if (Test-RunningProcessFromPidFile -PidFile $PidFile) {
+        return $true
+    }
+
+    $lockPid = Get-RuntimeLockProcessId -LockFile $RuntimeLockFile
+    if (Test-RunningProcessId -ProcessId $lockPid) {
+        Set-Content -LiteralPath $PidFile -Value $lockPid
+        return $true
+    }
+
+    if (Test-Path -LiteralPath $RuntimeLockFile) {
+        Remove-Item -LiteralPath $RuntimeLockFile -Force -ErrorAction SilentlyContinue
+    }
+
+    return $false
 }
 
 function Write-JsonFile {
@@ -99,6 +155,39 @@ function Write-JsonFile {
 
     $json = $Data | ConvertTo-Json -Depth 8
     Set-Content -LiteralPath $Path -Value $json
+}
+
+function Write-HeartbeatState {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [datetime]$ObservedAtUtc,
+        [Parameter(Mandatory = $true)]
+        [string]$Status,
+        [Parameter(Mandatory = $true)]
+        [string]$RuntimeMode,
+        [Parameter(Mandatory = $true)]
+        [bool]$DaemonHealthy,
+        [Parameter(Mandatory = $true)]
+        [bool]$N8NHealthy,
+        [Parameter(Mandatory = $true)]
+        [bool]$PlatformHealthy,
+        [Parameter(Mandatory = $true)]
+        [bool]$TunnelHealthy,
+        [string]$WebhookUrl = ""
+    )
+
+    Write-JsonFile -Path $Path -Data @{
+        observed_at_utc = $ObservedAtUtc.ToString("o")
+        status = $Status
+        runtime_mode = $RuntimeMode
+        daemon_healthy = $DaemonHealthy
+        n8n_healthy = $N8NHealthy
+        platform_healthy = $PlatformHealthy
+        tunnel_healthy = $TunnelHealthy
+        webhook_url = $WebhookUrl
+    }
 }
 
 function Read-JsonFile {
@@ -193,7 +282,13 @@ function Invoke-LocalBootstrap {
         $ComposeFile
     )
 
-    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $RepoRoot -PassThru -Wait -WindowStyle Hidden
+    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
+    $timeoutSec = 60
+    $elapsed = 0
+    while (-not $process.HasExited -and $elapsed -lt $timeoutSec) {
+        Start-Sleep -Seconds 1
+        $elapsed++
+    }
     return $process.ExitCode
 }
 
@@ -205,20 +300,27 @@ function Invoke-DaemonBootstrap {
         [string]$EnvFile
     )
 
-    $scriptPath = Join-Path $RepoRoot "scripts\start_trade_oracle_daemon.ps1"
+    $scriptPath = Join-Path $RepoRoot "scripts\start_forward_testing_stack.ps1"
     $args = @(
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
         $scriptPath,
-        "-EnvFile",
-        $EnvFile
+        "-EnvFile", $EnvFile,
+        "-SkipWatchdog"
     )
 
-    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $RepoRoot -PassThru -Wait -WindowStyle Hidden
+    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $RepoRoot -PassThru -WindowStyle Hidden
+    $timeoutSec = 60
+    $elapsed = 0
+    while (-not $process.HasExited -and $elapsed -lt $timeoutSec) {
+        Start-Sleep -Seconds 1
+        $elapsed++
+    }
     return $process.ExitCode
 }
+
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $resultsDir = Join-Path $repoRoot "results"
@@ -230,16 +332,20 @@ $heartbeatStatePath = Join-Path $resultsDir "local_server_watchdog_heartbeat.jso
 $composePath = Join-Path $repoRoot $ComposeFile
 $tunnelPidFile = Join-Path $resultsDir "windows365_quicktunnel.pid"
 $daemonPidFile = Join-Path $resultsDir "trade_oracle_daemon.pid"
+$daemonRuntimeLockFile = Join-Path $resultsDir "trade_oracle_daemon_runtime.lock"
+$watchdogPidPath = Join-Path $resultsDir "trade_oracle_watchdog.pid"
 $watchdogLogPath = Join-Path $resultsDir "local_server_watchdog.log"
 
 $previousState = Read-JsonFile -Path $statePath
+Set-Content -LiteralPath $watchdogPidPath -Value $PID
 
+try {
 while ($true) {
     $envMap = Read-DotEnvFile -Path $envPath
     $intervalSeconds = [Math]::Max(15, [int](Get-EnvValue -EnvMap $envMap -Name "TRADE_ORACLE_WATCHDOG_INTERVAL_SECONDS" -DefaultValue "60"))
     $cooldownMinutes = [Math]::Max(1, [int](Get-EnvValue -EnvMap $envMap -Name "TRADE_ORACLE_WATCHDOG_COOLDOWN_MINUTES" -DefaultValue "15"))
 
-    $daemonHealthy = Test-RunningProcessFromPidFile -PidFile $daemonPidFile
+    $daemonHealthy = Test-DaemonHealthy -PidFile $daemonPidFile -RuntimeLockFile $daemonRuntimeLockFile
     $n8nHealthy = if ($RuntimeMode -eq "n8n") { Test-HttpReady -Url "http://127.0.0.1:$N8NPort/healthz" } else { $true }
     $platformHealthy = if ($RuntimeMode -eq "n8n") { Test-HttpReady -Url "http://127.0.0.1:$PlatformPort/system/health" } else { $true }
 
@@ -257,16 +363,7 @@ while ($true) {
     $nowUtc = (Get-Date).ToUniversalTime()
     $status = if ($healthy) { "healthy" } else { "degraded" }
 
-    Write-JsonFile -Path $heartbeatStatePath -Data @{
-        observed_at_utc = $nowUtc.ToString("o")
-        status = $status
-        runtime_mode = $RuntimeMode
-        daemon_healthy = $daemonHealthy
-        n8n_healthy = $n8nHealthy
-        platform_healthy = $platformHealthy
-        tunnel_healthy = $tunnelHealthy
-        webhook_url = $webhookUrl
-    }
+    Write-HeartbeatState -Path $heartbeatStatePath -ObservedAtUtc $nowUtc -Status $status -RuntimeMode $RuntimeMode -DaemonHealthy $daemonHealthy -N8NHealthy $n8nHealthy -PlatformHealthy $platformHealthy -TunnelHealthy $tunnelHealthy -WebhookUrl $webhookUrl
 
     Add-Content -LiteralPath $watchdogLogPath -Value ("{0} mode={1} status={2} daemon={3} n8n={4} platform={5} tunnel={6}" -f $nowUtc.ToString("o"), $RuntimeMode, $status, $daemonHealthy, $n8nHealthy, $platformHealthy, $tunnelHealthy)
 
@@ -322,7 +419,7 @@ while ($true) {
                 Write-Warning "Bootstrap attempt failed: $($_.Exception.Message)"
             }
 
-            $recheckDaemon = Test-RunningProcessFromPidFile -PidFile $daemonPidFile
+            $recheckDaemon = Test-DaemonHealthy -PidFile $daemonPidFile -RuntimeLockFile $daemonRuntimeLockFile
             $recheckN8N = if ($RuntimeMode -eq "n8n") { Test-HttpReady -Url "http://127.0.0.1:$N8NPort/healthz" } else { $true }
             $recheckPlatform = if ($RuntimeMode -eq "n8n") { Test-HttpReady -Url "http://127.0.0.1:$PlatformPort/system/health" } else { $true }
             $recheckTunnel = if ($requiresTunnel) { Test-RunningProcessFromPidFile -PidFile $tunnelPidFile } else { $true }
@@ -331,9 +428,11 @@ while ($true) {
             if ($recovered) {
                 $healthy = $true
                 $status = "healthy"
+                Write-HeartbeatState -Path $heartbeatStatePath -ObservedAtUtc $nowUtc -Status $status -RuntimeMode $RuntimeMode -DaemonHealthy $recheckDaemon -N8NHealthy $recheckN8N -PlatformHealthy $recheckPlatform -TunnelHealthy $recheckTunnel -WebhookUrl $webhookUrl
                 Send-TelegramMessage -EnvMap $envMap -Text ("TRADE_ORACLE local server recovered automatically`nHost: {0}`nTime UTC: {1}" -f $env:COMPUTERNAME, $nowUtc.ToString("o")) | Out-Null
             }
             else {
+                Write-HeartbeatState -Path $heartbeatStatePath -ObservedAtUtc $nowUtc -Status "degraded" -RuntimeMode $RuntimeMode -DaemonHealthy $recheckDaemon -N8NHealthy $recheckN8N -PlatformHealthy $recheckPlatform -TunnelHealthy $recheckTunnel -WebhookUrl $webhookUrl
                 Send-TelegramMessage -EnvMap $envMap -Text ("TRADE_ORACLE auto-restart attempted but stack is still degraded`nHost: {0}`nBootstrap exit: {1}`nTime UTC: {2}" -f $env:COMPUTERNAME, $bootstrapExitCode, $nowUtc.ToString("o")) | Out-Null
             }
 
@@ -374,4 +473,17 @@ while ($true) {
     }
 
     Start-Sleep -Seconds $intervalSeconds
+}
+}
+finally {
+    try {
+        if (Test-Path -LiteralPath $watchdogPidPath) {
+            $recordedPid = (Get-Content -LiteralPath $watchdogPidPath -Raw).Trim()
+            if ($recordedPid -eq [string]$PID) {
+                Remove-Item -LiteralPath $watchdogPidPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    catch {
+    }
 }

@@ -1,4 +1,4 @@
-"""
+resolving the stale runtime lock, running a readiness diagnostics check, or starting the stack)!"""
 Aggregate Daily oracle results, compute last-6-month trade counts per parameter,
 and produce `results/top_100_parameters.csv` using gating filters.
 """

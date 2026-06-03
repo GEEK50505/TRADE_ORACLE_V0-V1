@@ -30,8 +30,13 @@ class _FakeMT5AttachedSession:
 
 
 class _FakeMT5OrderModule:
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
     ORDER_TYPE_BUY_LIMIT = 2
     ORDER_TYPE_SELL_LIMIT = 3
+    ORDER_TYPE_BUY_STOP = 4
+    ORDER_TYPE_SELL_STOP = 5
+    TRADE_ACTION_DEAL = 1
     TRADE_ACTION_PENDING = 5
     ORDER_TIME_GTC = 1
     ORDER_FILLING_RETURN = 2
@@ -63,6 +68,7 @@ class _FakeMT5OrderModule:
             volume_min=0.01,
             volume_step=0.01,
             volume_max=5.0,
+            point=0.01,
         )
 
     def symbol_select(self, symbol, enabled):
@@ -77,6 +83,30 @@ class _FakeMT5OrderModule:
 
     def shutdown(self):
         return None
+
+
+class _FakeMT5DuplicatePendingOrderModule(_FakeMT5OrderModule):
+    def __init__(self):
+        super().__init__()
+        self.order_send_called = False
+
+    def orders_get(self, symbol=None):
+        return (
+            SimpleNamespace(
+                symbol="AVAUSD",
+                magic=26042026,
+                type=self.ORDER_TYPE_BUY_LIMIT,
+                price_open=9.40,
+                volume_initial=0.01,
+                sl=8.83,
+                tp=10.30,
+                comment="TRADE_ORACLE_BUY_LIMIT",
+            ),
+        )
+
+    def order_send(self, request):
+        self.order_send_called = True
+        return super().order_send(request)
 
 
 class _FakeMT5FailedAuth:
@@ -180,3 +210,115 @@ def test_mt5_bridge_allows_explicit_broker_volume_mode(monkeypatch):
         is True
     )
     assert fake_module.request["volume"] == 0.02
+
+
+def test_mt5_bridge_routes_near_market_buy_to_market_order(monkeypatch):
+    fake_module = _FakeMT5OrderModule()
+    monkeypatch.setattr("execution.mt5_bridge._mt5", fake_module)
+
+    bridge = MetaTraderBridge(
+        login=1513212902,
+        password="secret",
+        server="FTMO-Demo",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        symbol_map={"AVAX/USDT": "AVAUSD"},
+    )
+
+    assert (
+        bridge._transmit_limit_order_sync(
+            "AVAX/USDT",
+            "BUY",
+            15.87302,
+            9.46,
+            8.83,
+            10.30,
+            "units",
+        )
+        is True
+    )
+    assert fake_module.request["action"] == fake_module.TRADE_ACTION_DEAL
+    assert fake_module.request["type"] == fake_module.ORDER_TYPE_BUY
+    assert fake_module.request["price"] == 9.46
+
+
+def test_mt5_bridge_routes_buy_above_market_to_buy_stop(monkeypatch):
+    fake_module = _FakeMT5OrderModule()
+    monkeypatch.setattr("execution.mt5_bridge._mt5", fake_module)
+
+    bridge = MetaTraderBridge(
+        login=1513212902,
+        password="secret",
+        server="FTMO-Demo",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        symbol_map={"AVAX/USDT": "AVAUSD"},
+    )
+
+    assert (
+        bridge._transmit_limit_order_sync(
+            "AVAX/USDT",
+            "BUY",
+            15.87302,
+            9.60,
+            8.83,
+            10.30,
+            "units",
+        )
+        is True
+    )
+    assert fake_module.request["action"] == fake_module.TRADE_ACTION_PENDING
+    assert fake_module.request["type"] == fake_module.ORDER_TYPE_BUY_STOP
+    assert fake_module.request["price"] == 9.60
+
+
+def test_mt5_bridge_treats_existing_matching_pending_order_as_idempotent_success(monkeypatch):
+    fake_module = _FakeMT5DuplicatePendingOrderModule()
+    monkeypatch.setattr("execution.mt5_bridge._mt5", fake_module)
+
+    bridge = MetaTraderBridge(
+        login=1513212902,
+        password="secret",
+        server="FTMO-Demo",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        symbol_map={"AVAX/USDT": "AVAUSD"},
+    )
+
+    assert (
+        bridge._transmit_limit_order_sync(
+            "AVAX/USDT",
+            "BUY",
+            15.87302,
+            9.40,
+            8.83,
+            10.30,
+            "units",
+        )
+        is True
+    )
+    assert fake_module.order_send_called is False
+
+
+def test_mt5_bridge_rejects_invalid_buy_levels_before_order_send(monkeypatch):
+    fake_module = _FakeMT5OrderModule()
+    monkeypatch.setattr("execution.mt5_bridge._mt5", fake_module)
+
+    bridge = MetaTraderBridge(
+        login=1513212902,
+        password="secret",
+        server="FTMO-Demo",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        symbol_map={"AVAX/USDT": "AVAUSD"},
+    )
+
+    assert (
+        bridge._transmit_limit_order_sync(
+            "AVAX/USDT",
+            "BUY",
+            15.87302,
+            9.46,
+            9.80,
+            10.30,
+            "units",
+        )
+        is False
+    )
+    assert fake_module.request is None

@@ -35,6 +35,8 @@ class MetaTraderBridge:
         slippage_points: int = 20,
         magic_number: int = 26042026,
         comment_prefix: str = "TRADE_ORACLE",
+        duplicate_guard_enabled: bool = settings.TRADE_ORACLE_MT5_DUPLICATE_GUARD_ENABLED,
+        duplicate_price_tolerance_points: int = settings.TRADE_ORACLE_MT5_PRICE_TOLERANCE_POINTS,
     ) -> None:
         self.login_id = int(login)
         self.password = password
@@ -45,6 +47,8 @@ class MetaTraderBridge:
         self.slippage_points = int(slippage_points)
         self.magic_number = int(magic_number)
         self.comment_prefix = comment_prefix
+        self.duplicate_guard_enabled = bool(duplicate_guard_enabled)
+        self.duplicate_price_tolerance_points = max(0, int(duplicate_price_tolerance_points))
         self.logger = logging.getLogger("TRADE_ORACLE.MT5_Bridge")
         if not self.logger.handlers:
             logging.basicConfig(level=logging.INFO)
@@ -267,6 +271,184 @@ class MetaTraderBridge:
             return None
         return resolved_volume
 
+    @staticmethod
+    def _is_finite_positive(value: float) -> bool:
+        return math.isfinite(float(value)) and float(value) > 0.0
+
+    def _validate_order_levels(
+        self,
+        *,
+        resolved_symbol: str,
+        side: str,
+        limit_price: float,
+        stop_loss: float,
+        take_profit: float,
+    ) -> bool:
+        if not all(self._is_finite_positive(value) for value in (limit_price, stop_loss, take_profit)):
+            self.logger.error(
+                "MT5 order levels for %s must be finite positive numbers. price=%s sl=%s tp=%s",
+                resolved_symbol,
+                limit_price,
+                stop_loss,
+                take_profit,
+            )
+            return False
+
+        if side == "BUY" and not (stop_loss < limit_price < take_profit):
+            self.logger.error(
+                "MT5 BUY levels for %s are invalid: expected stop_loss < limit_price < take_profit.",
+                resolved_symbol,
+            )
+            return False
+        if side == "SELL" and not (take_profit < limit_price < stop_loss):
+            self.logger.error(
+                "MT5 SELL levels for %s are invalid: expected take_profit < limit_price < stop_loss.",
+                resolved_symbol,
+            )
+            return False
+        return True
+
+    def _has_duplicate_pending_order(
+        self,
+        *,
+        mt5: Any,
+        resolved_symbol: str,
+        order_type: int,
+        resolved_volume: float,
+        limit_price: float,
+        stop_loss: float,
+        take_profit: float,
+        symbol_info: Any,
+    ) -> bool:
+        if not self.duplicate_guard_enabled or not hasattr(mt5, "orders_get"):
+            return False
+
+        try:
+            orders = mt5.orders_get(symbol=resolved_symbol)
+        except TypeError:
+            orders = mt5.orders_get()
+        except Exception:
+            self.logger.exception("MT5 duplicate-order inspection failed for %s.", resolved_symbol)
+            return False
+
+        if not orders:
+            return False
+
+        point = float(getattr(symbol_info, "point", 0.0) or 0.0)
+        tolerance = point * self.duplicate_price_tolerance_points if point > 0.0 else 0.0
+        comment_prefix = str(self.comment_prefix)
+
+        for order in orders:
+            order_symbol = str(getattr(order, "symbol", "") or "")
+            order_magic = int(getattr(order, "magic", 0) or 0)
+            existing_type = int(getattr(order, "type", -1) or -1)
+            existing_price = float(getattr(order, "price_open", getattr(order, "price", 0.0)) or 0.0)
+            existing_volume = float(getattr(order, "volume_initial", getattr(order, "volume_current", 0.0)) or 0.0)
+            existing_sl = float(getattr(order, "sl", 0.0) or 0.0)
+            existing_tp = float(getattr(order, "tp", 0.0) or 0.0)
+            existing_comment = str(getattr(order, "comment", "") or "")
+
+            if order_symbol != resolved_symbol:
+                continue
+            if order_magic != self.magic_number:
+                continue
+            if existing_type != int(order_type):
+                continue
+            if comment_prefix and not existing_comment.startswith(comment_prefix):
+                continue
+            if tolerance > 0.0 and abs(existing_price - float(limit_price)) > tolerance:
+                continue
+            if tolerance <= 0.0 and not math.isclose(existing_price, float(limit_price), rel_tol=0.0, abs_tol=1e-8):
+                continue
+            if existing_volume > 0.0 and not math.isclose(existing_volume, float(resolved_volume), rel_tol=0.0, abs_tol=1e-8):
+                continue
+            if existing_sl > 0.0 and abs(existing_sl - float(stop_loss)) > max(tolerance, 1e-8):
+                continue
+            if existing_tp > 0.0 and abs(existing_tp - float(take_profit)) > max(tolerance, 1e-8):
+                continue
+
+            self.logger.warning(
+                "MT5 duplicate pending order detected for %s at price %.8f; treating transmit as already placed.",
+                resolved_symbol,
+                existing_price,
+            )
+            return True
+
+        return False
+
+    def _resolve_mt5_order_request(
+        self,
+        *,
+        mt5: Any,
+        side: str,
+        symbol_info: Any,
+        tick: Any,
+        requested_price: float,
+    ) -> dict[str, Any] | None:
+        point = float(getattr(symbol_info, "point", 0.0) or 0.0)
+        tolerance = point if point > 0.0 else max(abs(float(requested_price)) * 1e-6, 1e-8)
+        bid = float(getattr(tick, "bid", 0.0) or 0.0)
+        ask = float(getattr(tick, "ask", 0.0) or 0.0)
+
+        if side == "BUY":
+            if ask <= 0.0:
+                self.logger.error("MT5 symbol returned no valid ask price for BUY order routing.")
+                return None
+            if abs(float(requested_price) - ask) <= tolerance:
+                return {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "order_type": mt5.ORDER_TYPE_BUY,
+                    "price": ask,
+                    "comment": f"{self.comment_prefix}_BUY_MARKET",
+                    "pending": False,
+                }
+            if float(requested_price) < ask:
+                return {
+                    "action": mt5.TRADE_ACTION_PENDING,
+                    "order_type": mt5.ORDER_TYPE_BUY_LIMIT,
+                    "price": float(requested_price),
+                    "comment": f"{self.comment_prefix}_BUY_LIMIT",
+                    "pending": True,
+                }
+            return {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "order_type": mt5.ORDER_TYPE_BUY_STOP,
+                "price": float(requested_price),
+                "comment": f"{self.comment_prefix}_BUY_STOP",
+                "pending": True,
+            }
+
+        if side == "SELL":
+            if bid <= 0.0:
+                self.logger.error("MT5 symbol returned no valid bid price for SELL order routing.")
+                return None
+            if abs(float(requested_price) - bid) <= tolerance:
+                return {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "order_type": mt5.ORDER_TYPE_SELL,
+                    "price": bid,
+                    "comment": f"{self.comment_prefix}_SELL_MARKET",
+                    "pending": False,
+                }
+            if float(requested_price) > bid:
+                return {
+                    "action": mt5.TRADE_ACTION_PENDING,
+                    "order_type": mt5.ORDER_TYPE_SELL_LIMIT,
+                    "price": float(requested_price),
+                    "comment": f"{self.comment_prefix}_SELL_LIMIT",
+                    "pending": True,
+                }
+            return {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "order_type": mt5.ORDER_TYPE_SELL_STOP,
+                "price": float(requested_price),
+                "comment": f"{self.comment_prefix}_SELL_STOP",
+                "pending": True,
+            }
+
+        self.logger.error("Invalid MT5 order direction %s.", side)
+        return None
+
     def _transmit_limit_order_sync(
         self,
         symbol: str,
@@ -303,28 +485,54 @@ class MetaTraderBridge:
             return False
 
         side = direction.upper()
-        if side == "BUY":
-            order_type = mt5.ORDER_TYPE_BUY_LIMIT
-        elif side == "SELL":
-            order_type = mt5.ORDER_TYPE_SELL_LIMIT
-        else:
-            self.logger.error("Invalid MT5 order direction %s.", direction)
+        if not self._validate_order_levels(
+            resolved_symbol=resolved_symbol,
+            side=side,
+            limit_price=float(limit_price),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit),
+        ):
             return False
 
+        order_request = self._resolve_mt5_order_request(
+            mt5=mt5,
+            side=side,
+            symbol_info=symbol_info,
+            tick=tick,
+            requested_price=float(limit_price),
+        )
+        if order_request is None:
+            return False
+        order_type = int(order_request["order_type"])
+
+        if bool(order_request.get("pending", False)):
+            if self._has_duplicate_pending_order(
+                mt5=mt5,
+                resolved_symbol=resolved_symbol,
+                order_type=order_type,
+                resolved_volume=resolved_volume,
+                limit_price=float(order_request["price"]),
+                stop_loss=float(stop_loss),
+                take_profit=float(take_profit),
+                symbol_info=symbol_info,
+            ):
+                return True
+
         request = {
-            "action": mt5.TRADE_ACTION_PENDING,
+            "action": int(order_request["action"]),
             "symbol": resolved_symbol,
             "volume": resolved_volume,
             "type": order_type,
-            "price": float(limit_price),
+            "price": float(order_request["price"]),
             "sl": float(stop_loss),
             "tp": float(take_profit),
             "deviation": int(self.slippage_points),
             "magic": int(self.magic_number),
-            "comment": f"{self.comment_prefix}_{side}_LIMIT",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": getattr(mt5, "ORDER_FILLING_RETURN", 0),
+            "comment": str(order_request["comment"]),
         }
+        if bool(order_request.get("pending", False)):
+            request["type_time"] = mt5.ORDER_TIME_GTC
+            request["type_filling"] = getattr(mt5, "ORDER_FILLING_RETURN", 0)
 
         result = mt5.order_send(request)
         if result is None:
@@ -337,11 +545,12 @@ class MetaTraderBridge:
         }
         if getattr(result, "retcode", None) in success_codes:
             self.logger.info(
-                "MT5 pending limit order placed: %s %s volume=%s price=%s (requested_size=%s size_mode=%s)",
+                "MT5 order placed: %s %s volume=%s price=%s action=%s (requested_size=%s size_mode=%s)",
                 resolved_symbol,
                 side,
                 resolved_volume,
-                limit_price,
+                order_request["price"],
+                order_request["comment"],
                 size,
                 size_mode,
             )

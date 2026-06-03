@@ -203,6 +203,7 @@ def test_ops_service_execution_endpoints_use_match_trader_bridge():
     platform_response = client.post(
         "/ops/execution/platform-details",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",
@@ -219,6 +220,7 @@ def test_ops_service_execution_endpoints_use_match_trader_bridge():
     order_response = client.post(
         "/ops/execution/transmit-limit-order",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",
@@ -341,6 +343,7 @@ def test_ops_service_account_state_endpoint_returns_drawdown_oversight(monkeypat
     response = client.post(
         "/ops/account/state",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",
@@ -376,6 +379,7 @@ def test_ops_service_account_state_endpoint_falls_back_when_state_store_unavaila
     response = client.post(
         "/ops/account/state",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",

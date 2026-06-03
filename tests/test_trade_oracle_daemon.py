@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from uuid import uuid4
 
+import httpx
+
 from ai.langgraph_orchestrator import LangGraphEvaluationResult, LangGraphExecutionCandidate
-from ai.trade_oracle_daemon import TELEGRAM_UPDATE_OFFSET_CHECKPOINT_KEY, TradeOracleSingleRuntimeDaemon
+from ai.trade_oracle_daemon import (
+    TELEGRAM_UPDATE_OFFSET_CHECKPOINT_KEY,
+    HttpxTelegramBotClient,
+    TradeOracleSingleRuntimeDaemon,
+    _try_acquire_cycle_lock,
+)
 from ai.trade_oracle_storage import (
     build_trade_oracle_benchmark_store,
     build_trade_oracle_runtime_state_store,
@@ -14,6 +23,31 @@ from ai.trade_oracle_storage import (
 
 def _db_path(label: str) -> str:
     return f"results/test_trade_oracle_daemon_{label}_{uuid4().hex}.sqlite"
+
+
+def test_cycle_lock_blocks_overlap_and_releases():
+    lock_path = Path(f"results/test_trade_oracle_cycle_lock_{uuid4().hex}.lock")
+
+    first_lock = _try_acquire_cycle_lock(lock_path, stale_seconds=3600)
+    assert first_lock is not None
+    assert _try_acquire_cycle_lock(lock_path, stale_seconds=3600) is None
+
+    first_lock.release()
+    second_lock = _try_acquire_cycle_lock(lock_path, stale_seconds=3600)
+    assert second_lock is not None
+    second_lock.release()
+    lock_path.unlink(missing_ok=True)
+
+
+def test_cycle_lock_reclaims_dead_owner_lock():
+    lock_path = Path(f"results/test_trade_oracle_dead_owner_cycle_lock_{uuid4().hex}.lock")
+    lock_path.write_text('{"pid": 999999, "created_at_epoch": 1}', encoding="utf-8")
+
+    recovered_lock = _try_acquire_cycle_lock(lock_path, stale_seconds=3600)
+    assert recovered_lock is not None
+
+    recovered_lock.release()
+    lock_path.unlink(missing_ok=True)
 
 
 class _FakeStateManager:
@@ -72,6 +106,40 @@ class _FakeExecutionClient:
         return self.transmit_result
 
     async def shutdown(self):
+        return None
+
+
+class _FakeHttpxResponse:
+    def __init__(self, *, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self.payload = payload or {}
+        self.request = httpx.Request("POST", "https://api.telegram.org/botfake/answerCallbackQuery")
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"Client error '{self.status_code}'",
+                request=self.request,
+                response=httpx.Response(self.status_code, request=self.request),
+            )
+
+    def json(self):
+        return self.payload
+
+
+class _FakeHttpxClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    async def post(self, *_args, **_kwargs):
+        self.calls += 1
+        next_item = self.responses.pop(0)
+        if isinstance(next_item, Exception):
+            raise next_item
+        return next_item
+
+    async def aclose(self):
         return None
 
 
@@ -134,6 +202,42 @@ class _FakeResumeOrchestrator:
                 thread_id="thread-resume-001",
             ),
         )
+
+
+class _FakeAutoApproveOrchestrator:
+    async def evaluate_batch(self, *args, **kwargs):
+        return [
+            LangGraphEvaluationResult(
+                status="completed",
+                thread_id="thread-auto-approve-001",
+                interrupted=True,
+                review_required=False,
+                raw_setup={"asset_ticker": "DOGE/USDT", "localized_atr": 0.02},
+                review_context={"reason": "auto approved"},
+                candidate=LangGraphExecutionCandidate(
+                    execute_trade=True,
+                    symbol="DOGE/USDT",
+                    direction="BUY",
+                    entry_price=0.2,
+                    stop_loss=0.17,
+                    take_profit=0.24,
+                    size_tokens=500.0,
+                    confidence=0.82,
+                    execution_status="approved",
+                    execution_tp_mode="tp1_only",
+                    review_required=False,
+                    position_sizing={
+                        "tokens": 500.0,
+                        "entry_price": 0.2,
+                        "stop_loss": 0.17,
+                        "tp1": 0.24,
+                        "tp2": 0.27,
+                        "usd_value": 100.0,
+                    },
+                    thread_id="thread-auto-approve-001",
+                ),
+            )
+        ]
 
 
 class _ExplodingResumeOrchestrator:
@@ -266,6 +370,129 @@ def test_daemon_process_callback_query_resolves_review_and_transmits():
     assert "resume_execution_result" in telegram_client.edits[0]["text"]
 
 
+def test_daemon_run_cycle_once_transmits_when_review_is_auto_approved():
+    runtime_state_store = build_trade_oracle_runtime_state_store(
+        _db_path("auto_approve_state"),
+        backend="sqlite",
+    )
+    benchmark_store = build_trade_oracle_benchmark_store(
+        _db_path("auto_approve_benchmark"),
+        backend="sqlite",
+    )
+    telegram_client = _FakeTelegramClient()
+    client = _FakeExecutionClient(transmit_result=True)
+
+    daemon = TradeOracleSingleRuntimeDaemon(
+        runtime_state_store=runtime_state_store,
+        benchmark_store=benchmark_store,
+        orchestrator=_FakeAutoApproveOrchestrator(),
+        scanner_runner=_fake_scanner_runner,
+        execution_client_factory=lambda: client,
+        execution_backend="mt5",
+        telegram_client=telegram_client,
+        telegram_chat_id="6323801206",
+        watchlist=["DOGE/USDT"],
+        state_manager_factory=lambda: _FakeStateManager(5300.0),
+    )
+
+    result = asyncio.run(daemon.run_cycle_once())
+
+    assert result.outcome == "execution_result"
+    assert result.transmitted is True
+    assert client.transmit_calls != []
+    assert telegram_client.review_requests == []
+    assert runtime_state_store.list_pending_reviews(limit=20) == []
+
+
+def test_daemon_blocks_approved_resume_when_circuit_breaker_triggers_during_review_window():
+    """
+    Regression test:
+    - Telegram approves an existing pending review
+    - During the review window, account drawdown now crosses the 2.5% hard circuit breaker
+    - The daemon must NOT execute the approved trade
+    - The pending review is resolved with cycle_outcome="halted_circuit_breaker"
+    - Telegram receives circuit-breaker alerts
+    """
+    runtime_state_store = build_trade_oracle_runtime_state_store(
+        _db_path("cb_halt_state"),
+        backend="sqlite",
+    )
+    benchmark_store = build_trade_oracle_benchmark_store(
+        _db_path("cb_halt_benchmark"),
+        backend="sqlite",
+    )
+    telegram_client = _FakeTelegramClient()
+
+    # Trigger: high_watermark=5300, balance=5160 => drawdown=140 => 140/5300=2.641% >= 2.5%
+    client = _FakeExecutionClient(equity=5160.0, active_trades=0, transmit_result=True)
+
+    # If resume_review is called, this test should fail loudly.
+    orchestrator = _ExplodingResumeOrchestrator()
+
+    runtime_state_store.upsert_pending_review(
+        {
+            "thread_id": "thread-resume-cb-001",
+            "cycle_id": "cycle-resume-cb-001",
+            "run_id": "trade_oracle_seed",
+            "telegram_chat_id": "6323801206",
+            "telegram_message_id": "101",
+            "symbol": "DOGE/USDT",
+            "direction": "BUY",
+            "candidate": {"symbol": "DOGE/USDT"},
+            "review_context": {"reason": "telegram gate"},
+            "account_state": {
+                "current_balance": 5200.0,
+                "highest_equity": 5300.0,
+                "active_trades_count": 0,
+                "source": "pytest",
+            },
+            "review_status": "pending",
+            "review_action": "PENDING",
+        }
+    )
+
+    daemon = TradeOracleSingleRuntimeDaemon(
+        runtime_state_store=runtime_state_store,
+        benchmark_store=benchmark_store,
+        orchestrator=orchestrator,
+        scanner_runner=_fake_scanner_runner,
+        execution_client_factory=lambda: client,
+        execution_backend="mt5",
+        telegram_client=telegram_client,
+        telegram_chat_id="6323801206",
+        watchlist=["DOGE/USDT"],
+        state_manager_factory=lambda: _FakeStateManager(5300.0),
+    )
+
+    callback_query = {
+        "id": "cb_cbhalt_001",
+        "data": "approve:thread-resume-cb-001",
+        "from": {"username": "openclaw"},
+    }
+
+    import asyncio
+
+    result = asyncio.run(daemon.process_callback_query(callback_query))
+
+    assert result is not None
+    assert result.outcome == "halted_circuit_breaker"
+    assert client.transmit_calls == []
+
+    pending_review = runtime_state_store.get_pending_review("thread-resume-cb-001")
+    assert pending_review is not None
+    assert pending_review.review_status == "resolved"
+    assert pending_review.review_action == "APPROVE"
+    assert pending_review.cycle_outcome == "halted_circuit_breaker"
+
+    # First: callback answer should happen
+    assert telegram_client.callback_answers[0]["callback_query_id"] == "cb_cbhalt_001"
+    assert "received" in telegram_client.callback_answers[0]["text"].lower()
+
+    # Then: Telegram alert(s) for circuit breaker should be sent
+    assert any("CIRCUIT BREAKER TRIGGERED" in msg["text"] for msg in telegram_client.messages)
+    assert any("Approved trade was NOT executed" in msg["text"] for msg in telegram_client.messages)
+
+
 def test_daemon_persists_telegram_update_offset_and_reloads_after_restart():
     runtime_state_store = build_trade_oracle_runtime_state_store(
         _db_path("cursor_state"),
@@ -327,6 +554,68 @@ def test_daemon_persists_telegram_update_offset_and_reloads_after_restart():
 
     assert restarted_daemon.telegram_update_offset == 43
     assert restarted_client.fetch_offsets == [43]
+
+
+def test_httpx_telegram_client_ignores_stale_callback_answer_400():
+    telegram_client = HttpxTelegramBotClient("fake-token")
+    telegram_client.client = _FakeHttpxClient([_FakeHttpxResponse(status_code=400)])
+
+    asyncio.run(
+        telegram_client.answer_callback_query(
+            callback_query_id="stale-callback-id",
+            text="Approve received.",
+        )
+    )
+
+
+def test_httpx_telegram_client_retries_fetch_updates_then_succeeds():
+    telegram_client = HttpxTelegramBotClient("fake-token")
+    telegram_client.client = _FakeHttpxClient(
+        [
+            httpx.ConnectError("temporary dns failure"),
+            _FakeHttpxResponse(
+                status_code=200,
+                payload={"result": [{"update_id": 15, "callback_query": {"id": "cb_15"}}]},
+            ),
+        ]
+    )
+
+    updates = asyncio.run(telegram_client.fetch_updates(offset=10, timeout=1))
+
+    assert len(updates) == 1
+    assert telegram_client.client.calls == 2
+
+
+def test_httpx_telegram_client_returns_empty_updates_after_retryable_failure():
+    telegram_client = HttpxTelegramBotClient("fake-token")
+    telegram_client.client = _FakeHttpxClient(
+        [
+            httpx.ConnectError("temporary dns failure"),
+            httpx.ConnectError("temporary dns failure"),
+            httpx.ConnectError("temporary dns failure"),
+        ]
+    )
+
+    updates = asyncio.run(telegram_client.fetch_updates(offset=10, timeout=1))
+
+    assert updates == []
+    assert telegram_client.client.calls == telegram_client.request_attempts
+
+
+def test_httpx_telegram_client_returns_empty_updates_after_409_conflict():
+    telegram_client = HttpxTelegramBotClient("fake-token")
+    telegram_client.client = _FakeHttpxClient(
+        [
+            _FakeHttpxResponse(status_code=409),
+            _FakeHttpxResponse(status_code=409),
+            _FakeHttpxResponse(status_code=409),
+        ]
+    )
+
+    updates = asyncio.run(telegram_client.fetch_updates(offset=10, timeout=1))
+
+    assert updates == []
+    assert telegram_client.client.calls == telegram_client.request_attempts
 
 
 def test_daemon_ignores_replayed_callback_after_review_is_resolved():

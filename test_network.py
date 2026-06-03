@@ -1,8 +1,18 @@
 """
 Network diagnostic script to identify connectivity issues
 """
+
+import os
 import socket
 import sys
+
+import pytest
+
+# This module is a connectivity *diagnostic*, not a deterministic unit test.
+# It also defines async tests which require pytest-asyncio to be installed.
+# By default we skip it so the main unit test suite can run reliably.
+if os.getenv("TRADE_ORACLE_NETWORK_TESTS", "0").strip().lower() not in {"1", "true", "yes", "y"}:
+    pytest.skip("Skipping network diagnostics during unit tests. Set TRADE_ORACLE_NETWORK_TESTS=1 to run.", allow_module_level=True)
 
 print("=" * 80)
 print("NETWORK DIAGNOSTIC PROTOCOL")

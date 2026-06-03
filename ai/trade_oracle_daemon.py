@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 import httpx
@@ -20,6 +23,12 @@ from .langgraph_orchestrator import (
     LangGraphSupervisorOrchestrator,
     resolve_live_take_profit,
 )
+from .shadow_mode import (
+    SHADOW_MODE_ENABLED,
+    ShadowCycleResult,
+    ShadowModeRunner,
+    build_shadow_mode_runner,
+)
 from .trade_oracle_benchmark import TradeOracleBenchmarkEvent
 from .trade_oracle_storage import (
     TradeOracleBenchmarkStoreProtocol,
@@ -32,6 +41,7 @@ logger = logging.getLogger("TRADE_ORACLE.SingleRuntimeDaemon")
 
 TELEGRAM_UPDATE_OFFSET_CHECKPOINT_KEY = "telegram_update_offset"
 OPEN_REVIEW_STATUSES = {"pending", "telegram_sent"}
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TradeOracleAccountSnapshot(BaseModel):
@@ -92,6 +102,91 @@ def _build_cycle_id(seed: int | None = None) -> str:
     return f"cycle_{resolved_seed}"
 
 
+@dataclass(slots=True)
+class _CycleLock:
+    path: Path
+    fd: int
+
+    def release(self) -> None:
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove cycle lock at %s.", self.path)
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+
+def _try_acquire_cycle_lock(path: str | Path, *, stale_seconds: int) -> _CycleLock | None:
+    lock_path = Path(path)
+    if not lock_path.is_absolute():
+        lock_path = REPO_ROOT / lock_path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _open_lock() -> _CycleLock:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        payload = {
+            "pid": os.getpid(),
+            "created_at_epoch": time.time(),
+            "created_at_monotonic": time.monotonic(),
+        }
+        os.write(fd, json.dumps(payload).encode("utf-8"))
+        return _CycleLock(path=lock_path, fd=fd)
+
+    try:
+        return _open_lock()
+    except FileExistsError:
+        pass
+
+    try:
+        existing = json.loads(lock_path.read_text(encoding="utf-8"))
+        owner_pid = int(existing.get("pid", 0) or 0)
+        created_at_epoch = float(existing.get("created_at_epoch", 0.0) or 0.0)
+    except Exception:
+        logger.warning("Removing corrupted or unreadable daemon lock at %s.", lock_path)
+        try:
+            lock_path.unlink(missing_ok=True)
+            return _open_lock()
+        except Exception:
+            return None
+
+    if owner_pid > 0 and not _pid_is_running(owner_pid):
+        logger.warning("Removing dead-owner daemon lock at %s (pid=%s).", lock_path, owner_pid)
+        try:
+            lock_path.unlink(missing_ok=True)
+            return _open_lock()
+        except FileExistsError:
+            return None
+        except OSError:
+            return None
+
+    if stale_seconds > 0 and (time.time() - created_at_epoch) > stale_seconds:
+        logger.warning("Removing stale daemon cycle lock at %s.", lock_path)
+        try:
+            lock_path.unlink(missing_ok=True)
+            return _open_lock()
+        except FileExistsError:
+            return None
+        except OSError:
+            return None
+    return None
+
+
 def _reviewer_name(callback_query: dict[str, Any]) -> str:
     actor = callback_query.get("from", {}) if isinstance(callback_query, dict) else {}
     username = str(actor.get("username", "")).strip()
@@ -122,16 +217,69 @@ class HttpxTelegramBotClient:
     def __init__(self, token: str, *, timeout_seconds: int = 30):
         self.token = token
         self.timeout_seconds = timeout_seconds
+        self.request_attempts = max(1, int(settings.TRADE_ORACLE_DAEMON_TELEGRAM_REQUEST_ATTEMPTS))
+        self.retry_base_seconds = max(0.25, float(settings.TRADE_ORACLE_DAEMON_TELEGRAM_RETRY_BASE_SECONDS))
         self.client = httpx.AsyncClient(
             base_url=f"https://api.telegram.org/bot{token}/",
             timeout=max(10, timeout_seconds + 10),
             trust_env=False,
         )
 
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        if isinstance(exc, (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+            return exc.response.status_code >= 500 or exc.response.status_code == 409
+        message = str(exc).lower()
+        return any(
+            token in message
+            for token in (
+                "getaddrinfo failed",
+                "name or service not known",
+                "temporary failure in name resolution",
+                "connection reset",
+                "connection aborted",
+                "server disconnected",
+            )
+        )
+
+    async def _post_json(self, endpoint: str, payload: dict[str, Any], *, swallow_retryable_failure: bool = False) -> Any | None:
+        last_exc: Exception | None = None
+        for attempt in range(1, self.request_attempts + 1):
+            try:
+                response = await self.client.post(endpoint, json=payload)
+                response.raise_for_status()
+                return response
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self.request_attempts or not self._is_retryable_error(exc):
+                    break
+                delay_seconds = self.retry_base_seconds * attempt
+                logger.warning(
+                    "Telegram request retry %s/%s for %s after %s: %s",
+                    attempt,
+                    self.request_attempts,
+                    endpoint,
+                    type(exc).__name__,
+                    exc,
+                )
+                await asyncio.sleep(delay_seconds)
+        if swallow_retryable_failure and last_exc is not None and self._is_retryable_error(last_exc):
+            logger.warning(
+                "Telegram request %s exhausted retries after %s attempts; continuing without raising.",
+                endpoint,
+                self.request_attempts,
+            )
+            return None
+        if last_exc is not None:
+            raise last_exc
+        return None
+
     async def send_review_request(self, *, chat_id: str, text: str, thread_id: str) -> str:
-        response = await self.client.post(
+        response = await self._post_json(
             "sendMessage",
-            json={
+            {
                 "chat_id": chat_id,
                 "text": text,
                 "reply_markup": {
@@ -144,47 +292,59 @@ class HttpxTelegramBotClient:
                 },
             },
         )
-        response.raise_for_status()
+        if response is None:
+            raise RuntimeError("Telegram send_review_request returned no response.")
         payload = response.json()
         return str(payload.get("result", {}).get("message_id", ""))
 
     async def send_message(self, *, chat_id: str, text: str) -> str:
-        response = await self.client.post(
+        response = await self._post_json(
             "sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            {"chat_id": chat_id, "text": text},
         )
-        response.raise_for_status()
+        if response is None:
+            raise RuntimeError("Telegram send_message returned no response.")
         payload = response.json()
         return str(payload.get("result", {}).get("message_id", ""))
 
     async def edit_review_message(self, *, chat_id: str, message_id: str, text: str) -> None:
         if not chat_id or not message_id:
             return
-        response = await self.client.post(
+        await self._post_json(
             "editMessageText",
-            json={"chat_id": chat_id, "message_id": int(message_id), "text": text},
+            {"chat_id": chat_id, "message_id": int(message_id), "text": text},
         )
-        response.raise_for_status()
 
     async def answer_callback_query(self, *, callback_query_id: str, text: str = "") -> None:
         if not callback_query_id:
             return
-        response = await self.client.post(
-            "answerCallbackQuery",
-            json={"callback_query_id": callback_query_id, "text": text},
-        )
-        response.raise_for_status()
+        try:
+            await self._post_json(
+                "answerCallbackQuery",
+                {"callback_query_id": callback_query_id, "text": text},
+                swallow_retryable_failure=True,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 400:
+                logger.warning(
+                    "Ignoring stale or invalid Telegram callback query answer for callback_id=%s.",
+                    callback_query_id,
+                )
+                return
+            raise
 
     async def fetch_updates(self, *, offset: int | None, timeout: int) -> list[dict[str, Any]]:
-        response = await self.client.post(
+        response = await self._post_json(
             "getUpdates",
-            json={
+            {
                 "offset": offset,
                 "timeout": timeout,
                 "allowed_updates": ["callback_query"],
             },
+            swallow_retryable_failure=True,
         )
-        response.raise_for_status()
+        if response is None:
+            return []
         payload = response.json()
         return payload.get("result", []) if isinstance(payload, dict) else []
 
@@ -203,6 +363,8 @@ class TradeOracleSingleRuntimeDaemon:
     execution_client_factory: Callable[[], Any]
     execution_backend: str
     benchmark_variant: str = settings.TRADE_ORACLE_BENCHMARK_VARIANT
+    shadow_variant: str = settings.TRADE_ORACLE_SHADOW_BENCHMARK_VARIANT
+    shadow_runner: ShadowModeRunner | None = None
     telegram_client: TelegramBotClientProtocol | None = None
     telegram_chat_id: str = settings.TRADE_ORACLE_TELEGRAM_CHAT_ID
     watchlist: list[str] = field(default_factory=list)
@@ -212,10 +374,11 @@ class TradeOracleSingleRuntimeDaemon:
     idle_sleep_seconds: float = settings.TRADE_ORACLE_DAEMON_IDLE_SLEEP_SECONDS
     send_cycle_summary: bool = settings.TRADE_ORACLE_DAEMON_SEND_CYCLE_SUMMARY
     telegram_update_offset: int | None = None
+    _halted: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if not self.watchlist:
-            self.watchlist = list(settings.WATCHLIST)
+            self.watchlist = list(settings.TRADE_ORACLE_DAEMON_WATCHLIST)
         if self.telegram_update_offset is None:
             self.telegram_update_offset = self._load_telegram_update_offset()
 
@@ -546,7 +709,113 @@ class TradeOracleSingleRuntimeDaemon:
                 f"Transmitted: {str(bool(transmitted))}"
             )
 
+    def _write_shadow_journal(self, result: ShadowCycleResult, *, run_id: str, cycle_id: str) -> None:
+        """
+        Persist a shadow LLM decision to the forward journal.
+        transmit_succeeded is ALWAYS False — shadow mode never touches MT5.
+        """
+        try:
+            self.runtime_state_store.upsert_forward_journal_entry(
+                {
+                    "cycle_id": f"{cycle_id}_shadow",
+                    "run_id": run_id,
+                    "benchmark_variant": self.shadow_variant,
+                    "thread_id": "",
+                    "workflow_name": "TRADE_ORACLE Shadow Mode v1",
+                    "stage": result.status,
+                    "outcome": result.status,
+                    "symbol": result.symbol,
+                    "direction": result.direction,
+                    "pending_review": False,
+                    "transmit_succeeded": False,  # NEVER True in shadow mode
+                    "benchmark_event_count": 1,
+                    "thread_ids": [],
+                    "summary": {
+                        "entry_price": result.entry_price,
+                        "stop_loss": result.stop_loss,
+                        "tp1": result.tp1,
+                        "tp2": result.tp2,
+                        "confidence": result.confidence,
+                        "rationale": result.rationale,
+                        "compliance_proof": result.compliance_proof,
+                        "model_used": result.model_used,
+                        "latency_ms": result.latency_ms,
+                        "shadow_mode": True,
+                        "error": result.error,
+                    },
+                }
+            )
+            logger.info(
+                "[ShadowMode] Journal entry written: %s %s %s (variant=%s)",
+                result.status,
+                result.direction or "-",
+                result.symbol or "-",
+                self.shadow_variant,
+            )
+        except Exception:
+            logger.exception("[ShadowMode] Failed to write shadow journal entry — continuing.")
+
+    async def _handle_circuit_breaker_event(self, error: Exception, run_id: str, cycle_id: str) -> None:
+        logger.critical("Handling circuit breaker event: %s", error)
+        self._halted = True
+        
+        drawdown_pct = getattr(error, 'current_drawdown_pct', 0.0)
+        drawdown_usd = getattr(error, 'current_drawdown_usd', 0.0)
+        high_watermark = getattr(error, 'high_watermark', 0.0)
+
+        self._record_benchmark_event(
+            event_type="circuit_breaker_triggered",
+            run_id=run_id,
+            cycle_id=cycle_id,
+            status="halted",
+            decision="system_halted",
+            payload={
+                "drawdown_pct": drawdown_pct * 100,
+                "drawdown_usd": drawdown_usd,
+                "high_watermark": high_watermark,
+                "circuit_breaker_limit_pct": 2.5,
+                "message": str(error),
+            }
+        )
+
+        alert_message = (
+            f"🚨 *CIRCUIT BREAKER TRIGGERED* 🚨\n\n"
+            f"Drawdown: `{drawdown_pct * 100:.3f}%` "
+            f"(${drawdown_usd:.2f})\n"
+            f"Hard limit: `2.5%`\n"
+            f"High watermark: `${high_watermark:.2f}`\n\n"
+            f"*All new trade evaluation is HALTED.*\n"
+            f"Existing positions remain open.\n\n"
+            f"To resume: investigate, then restart daemon manually."
+        )
+        await self._send_cycle_summary_message(alert_message)
+
     async def run_cycle_once(self) -> TradeOracleCycleResult:
+        cycle_lock = _try_acquire_cycle_lock(
+            settings.TRADE_ORACLE_DAEMON_CYCLE_LOCK_PATH,
+            stale_seconds=settings.TRADE_ORACLE_DAEMON_CYCLE_LOCK_STALE_SECONDS,
+        )
+        if cycle_lock is None:
+            logger.warning("Skipping cycle because another daemon cycle owns the cycle lock.")
+            return TradeOracleCycleResult(
+                run_id="",
+                cycle_id="",
+                outcome="cycle_lock_held",
+            )
+        try:
+            return await self._run_cycle_once_locked_body()
+        finally:
+            cycle_lock.release()
+
+    async def _run_cycle_once_locked_body(self) -> TradeOracleCycleResult:
+        if self._halted:
+            logger.critical("Daemon is in HALTED state due to circuit breaker. Manual restart required.")
+            return TradeOracleCycleResult(
+                run_id="",
+                cycle_id="",
+                outcome="halted_circuit_breaker",
+            )
+
         open_reviews = self._list_open_reviews(limit=100)
         if open_reviews:
             logger.info("Skipping cycle because %s pending review(s) already exist.", len(open_reviews))
@@ -563,6 +832,26 @@ class TradeOracleSingleRuntimeDaemon:
         cycle_id = _build_cycle_id(seed)
         account_state = await self._resolve_account_state()
 
+        # --- CIRCUIT BREAKER CHECK ---
+        try:
+            risk_manager = RiskManager(
+                current_balance=account_state.current_balance,
+                highest_equity=account_state.highest_equity,
+                active_trades_count=account_state.active_trades_count,
+            )
+            if hasattr(risk_manager, "check_circuit_breaker"):
+                risk_manager.check_circuit_breaker()
+        except Exception as e:
+            if type(e).__name__ == "CircuitBreakerTriggered":
+                await self._handle_circuit_breaker_event(e, run_id=run_id, cycle_id=cycle_id)
+                return TradeOracleCycleResult(
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    outcome="halted_circuit_breaker",
+                )
+            else:
+                raise
+
         scanner_rows = await self.scanner_runner(list(self.watchlist))
         scanner_symbols = sorted({str(row.get("symbol", "")).strip() for row in scanner_rows if str(row.get("symbol", "")).strip()})
         self._record_benchmark_event(
@@ -578,6 +867,62 @@ class TradeOracleSingleRuntimeDaemon:
                 "account_state_source": account_state.source,
             },
         )
+
+        # -----------------------------------------------------------------------
+        # SHADOW MODE BLOCK — live LLM evaluation, NEVER transmits to MT5
+        # Runs as a parallel counterfactual immediately after scanner rows are
+        # ready so its latency does not block the primary decision path.
+        # -----------------------------------------------------------------------
+        if self.shadow_runner is not None and scanner_rows:
+            try:
+                primary_confidence = 0.0  # resolved post-evaluation; we call before primary intentionally
+                shadow_result = await self.shadow_runner.run_shadow_cycle(
+                    scanner_rows,
+                    account_state.model_dump(),
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    primary_candidate_confidence=primary_confidence,
+                )
+                self._write_shadow_journal(shadow_result, run_id=run_id, cycle_id=cycle_id)
+                self._record_benchmark_event(
+                    event_type="shadow_brain_run",
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    symbol=shadow_result.symbol,
+                    status=shadow_result.status,
+                    decision=shadow_result.status,
+                    payload=shadow_result.model_dump(),
+                )
+                if self.telegram_client is not None and self.telegram_chat_id:
+                    msg = (
+                        "👤 *[ShadowMode v1]* Cycle Evaluation\n"
+                        f"Status: `{shadow_result.status}`\n"
+                        f"Symbol: `{shadow_result.symbol or 'n/a'}`\n"
+                        f"Direction: `{shadow_result.direction or 'PASS'}`\n"
+                    )
+                    if shadow_result.status == "shadow_trade":
+                        msg += (
+                            f"Entry Price: `{shadow_result.entry_price:.6f}`\n"
+                            f"Stop Loss: `{shadow_result.stop_loss:.6f}`\n"
+                            f"TP1: `{shadow_result.tp1:.6f}` | TP2: `{shadow_result.tp2:.6f}`\n"
+                            f"Conviction: `{shadow_result.confidence * 10:.1f}/10`\n"
+                            f"Rationale: {shadow_result.rationale}\n"
+                        )
+                    else:
+                        if shadow_result.error:
+                            msg += f"Error: `{shadow_result.error}`\n"
+                        else:
+                            msg += f"Rationale: {shadow_result.rationale or 'All setups passed/ignored'}\n"
+                    msg += f"Model: `{shadow_result.model_used}`"
+                    try:
+                        await self.telegram_client.send_message(chat_id=self.telegram_chat_id, text=msg)
+                    except Exception:
+                        logger.exception("[ShadowMode] Failed to send Telegram alert.")
+            except Exception:
+                logger.exception("[ShadowMode] Shadow cycle raised unexpectedly — primary cycle continues.")
+        # -----------------------------------------------------------------------
+        # END SHADOW MODE BLOCK
+        # -----------------------------------------------------------------------
 
         evaluations = await self.orchestrator.evaluate_batch(
             scanner_rows,
@@ -937,6 +1282,40 @@ class TradeOracleSingleRuntimeDaemon:
         account_state = TradeOracleAccountSnapshot.model_validate(pending_review.account_state)
         seed = _now_run_seed()
         run_id = _build_run_id(seed)
+
+        if action == "APPROVE":
+            # --- CIRCUIT BREAKER CHECK DURING REVIEW WINDOW ---
+            account_state_for_cb = await self._resolve_account_state()
+            try:
+                risk_manager = RiskManager(
+                    current_balance=account_state_for_cb.current_balance,
+                    highest_equity=account_state_for_cb.highest_equity,
+                    active_trades_count=account_state_for_cb.active_trades_count,
+                )
+                if hasattr(risk_manager, "check_circuit_breaker"):
+                    risk_manager.check_circuit_breaker()
+            except Exception as e:
+                if type(e).__name__ == "CircuitBreakerTriggered":
+                    await self._handle_circuit_breaker_event(e, run_id=run_id, cycle_id=pending_review.cycle_id)
+                    await self._send_cycle_summary_message(
+                        "⚠️ Approved trade was NOT executed — circuit breaker triggered during review window. System halted."
+                    )
+                    self.runtime_state_store.resolve_pending_review(
+                        thread_id,
+                        review_action=action,
+                        reviewer=reviewer,
+                        review_notes="Approved, but circuit breaker triggered before execution.",
+                        telegram_message_id=pending_review.telegram_message_id,
+                        cycle_outcome="halted_circuit_breaker",
+                    )
+                    return TradeOracleCycleResult(
+                        run_id=run_id,
+                        cycle_id=pending_review.cycle_id,
+                        outcome="halted_circuit_breaker",
+                    )
+                else:
+                    raise
+
         evaluation = await self.orchestrator.resume_review(
             thread_id=thread_id,
             human_decision={
@@ -1014,10 +1393,21 @@ def build_default_trade_oracle_daemon(
         checkpointer_path=settings.TRADE_ORACLE_LANGGRAPH_CHECKPOINTER_PATH,
         audit_backend=settings.TRADE_ORACLE_AUDIT_BACKEND,
         audit_db_path=settings.TRADE_ORACLE_AUDIT_DB_PATH,
-        auto_approve=False,
+        auto_approve=settings.TRADE_ORACLE_DAEMON_AUTO_APPROVE_REVIEWS,
     )
     resolved_telegram_token = (telegram_token or settings.TRADE_ORACLE_TELEGRAM_BOT_TOKEN or "").strip()
     telegram_client = HttpxTelegramBotClient(resolved_telegram_token) if resolved_telegram_token else None
+
+    # Build shadow runner — returns None if GOOGLE_API_KEY is missing or
+    # TRADE_ORACLE_SHADOW_MODE_ENABLED=0, leaving the primary engine unchanged.
+    shadow_runner = build_shadow_mode_runner()
+    if shadow_runner is not None:
+        logger.info(
+            "[ShadowMode] Active. Writing counterfactuals to variant '%s'.",
+            settings.TRADE_ORACLE_SHADOW_BENCHMARK_VARIANT,
+        )
+    else:
+        logger.info("[ShadowMode] Inactive (key missing or disabled).")
 
     return TradeOracleSingleRuntimeDaemon(
         runtime_state_store=runtime_state_store,
@@ -1027,9 +1417,11 @@ def build_default_trade_oracle_daemon(
         execution_client_factory=build_execution_client_from_settings,
         execution_backend=resolved_execution_backend,
         benchmark_variant=settings.TRADE_ORACLE_BENCHMARK_VARIANT,
+        shadow_variant=settings.TRADE_ORACLE_SHADOW_BENCHMARK_VARIANT,
+        shadow_runner=shadow_runner,
         telegram_client=telegram_client,
         telegram_chat_id=settings.TRADE_ORACLE_TELEGRAM_CHAT_ID,
-        watchlist=list(settings.WATCHLIST),
+        watchlist=list(settings.TRADE_ORACLE_DAEMON_WATCHLIST),
     )
 
 

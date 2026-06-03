@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import time
+from typing import Any, Callable
 
 from config import settings
 
@@ -63,7 +64,46 @@ def coerce_supabase_rows(response: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _is_retryable_supabase_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "connection reset",
+            "connection aborted",
+            "server disconnected",
+        )
+    )
+
+
+def execute_supabase_request(
+    request_factory: Callable[[], Any],
+    *,
+    attempts: int = 3,
+    delay_seconds: float = 1.0,
+) -> Any:
+    """Execute a Supabase request with small retries for transient transport failures."""
+
+    last_exc: Exception | None = None
+    total_attempts = max(1, int(attempts))
+    for attempt in range(total_attempts):
+        try:
+            return request_factory().execute()
+        except Exception as exc:  # pragma: no cover - exercised indirectly in live checks
+            last_exc = exc
+            if attempt + 1 >= total_attempts or not _is_retryable_supabase_error(exc):
+                raise
+            time.sleep(delay_seconds * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Supabase request failed without an exception.")
+
+
 __all__ = [
     "build_trade_oracle_supabase_client",
     "coerce_supabase_rows",
+    "execute_supabase_request",
 ]

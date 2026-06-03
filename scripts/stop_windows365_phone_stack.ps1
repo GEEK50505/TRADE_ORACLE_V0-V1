@@ -18,8 +18,8 @@ function Stop-ProcessFromPidFile {
 
     try {
         $pidValue = Get-Content -LiteralPath $PidFile -Raw
-        $pid = [int]($pidValue.Trim())
-        $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+        $targetProcessId = [int]($pidValue.Trim())
+        $process = Get-Process -Id $targetProcessId -ErrorAction SilentlyContinue
         if ($process) {
             $process | Stop-Process -Force
         }

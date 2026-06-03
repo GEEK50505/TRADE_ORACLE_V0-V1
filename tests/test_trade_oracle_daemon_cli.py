@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 
 def test_run_trade_oracle_daemon_help_loads_from_script_path():
+    repo_root = Path(__file__).resolve().parents[1]  # .../TRADE_ORACLE
+    script_path = repo_root / "scripts" / "run_trade_oracle_daemon.py"
     completed = subprocess.run(
-        [sys.executable, "scripts/run_trade_oracle_daemon.py", "--help"],
+        [sys.executable, str(script_path), "--help"],
         check=False,
         capture_output=True,
         text=True,

@@ -4,6 +4,8 @@ Repository for the crypto swing trading system.
 
 AI/session handoff entrypoint:
 - [AI_CONTEXT_HANDOFF.md](/c:/Users/G_R_E/Documents/REPOSITORIES/TRADE_ORACLE/TRADE_ORACLE/AI_CONTEXT_HANDOFF.md)
+- [System handbook](documents/development/trade_oracle_system_handbook.md)
+- [Final pipeline readiness report](documents/development/trade_oracle_final_pipeline_readiness_report.md)
 
 Contents:
 - project code and modules
@@ -57,6 +59,18 @@ Run the single-container platform service that packages Super Brain + Ops + MCP:
 
 ```powershell
 .venv-langgraph\Scripts\python.exe -m uvicorn api.trade_oracle_platform_service:app --host 127.0.0.1 --port 8000
+```
+
+Secret-safe forward-test readiness check:
+
+```powershell
+python scripts\check_forward_test_readiness.py --env-file .env.n8n.local
+```
+
+Optional live Supabase table reachability probe:
+
+```powershell
+python scripts\check_forward_test_readiness.py --env-file .env.n8n.local --check-supabase
 ```
 
 Optional MCP auth for production-like local runs:
@@ -203,11 +217,12 @@ $env:TRADE_ORACLE_BENCHMARK_VARIANT = "super_brain"
 
 Current storage recommendation:
 
-- keep `TRADE_ORACLE_AUDIT_BACKEND=sqlite`
-- keep `TRADE_ORACLE_BENCHMARK_BACKEND=sqlite`
-- treat SQLite as the primary operational store for audit and benchmark events during local validation and supervised forward-testing
+- use `TRADE_ORACLE_AUDIT_BACKEND=supabase`
+- use `TRADE_ORACLE_BENCHMARK_BACKEND=supabase`
+- use `TRADE_ORACLE_RUNTIME_STATE_BACKEND=supabase`
+- keep SQLite configured and tested as the local fallback until repeated supervised cycles prove parity
 
-The platform now resolves audit and benchmark storage through backend-selectable factories, so a future Supabase backend can be added without changing the HTTP routes or n8n contracts. At the moment, the Supabase benchmark/audit backend is intentionally not implemented yet; selecting `supabase` will raise a clear error instead of failing silently.
+The platform now resolves audit, benchmark, and runtime-state storage through backend-selectable factories. Supabase is the active unified data-center target; SQLite remains the local recovery and parity-check path.
 
 Local n8n validation on Windows via Docker:
 
@@ -411,11 +426,13 @@ If you want your PC to act like a practical local server, the repo now includes 
   - defaults to `daemon` mode and checks the Python daemon pid file
   - can still run in `n8n` fallback mode with `-RuntimeMode n8n`
   - reruns the matching bootstrap if the stack degrades
+  - in `daemon` mode it now reboots the full forward-testing stack path, including MT5 startup, readiness, daemon startup, and checkpoint-safe runtime recovery
   - can send direct Telegram alerts when the stack breaks or recovers
   - writes heartbeat/state files into `results/`
 - `scripts/install_local_server_automation.ps1`
   - installs a Task Scheduler job at user logon
   - if run as Administrator, also installs a startup task as `SYSTEM`
+  - this is now the recommended way to survive Windows restarts gracefully
 
 Recommended setup:
 
@@ -452,6 +469,12 @@ TRADE_ORACLE_WATCHDOG_COOLDOWN_MINUTES=15
 TRADE_ORACLE_HEARTBEAT_URL=
 ```
 
+Reboot hardening notes:
+
+- `scripts/start_forward_testing_stack.ps1` now uses a startup lock file at `results/forward_testing_start.lock`
+- this prevents overlapping boot/logon/watchdog/manual startup runs from colliding
+- after a laptop restart, the scheduled watchdog can restore the daemon-first stack without needing a manual VS Code power-on click
+
 What the watchdog can and cannot do:
 
 - it **can** alert you if:
@@ -468,11 +491,28 @@ To wake the PC for the 4H cycle from sleep or hibernate, install the repeating w
 powershell -ExecutionPolicy Bypass -File scripts\install_4h_wake_cycle_task.ps1
 ```
 
+By default this now targets the daemon-first forward-testing stack. The legacy n8n path can still be installed explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_4h_wake_cycle_task.ps1 -RuntimeMode n8n
+```
+
 Notes on wake behavior:
 
 - Windows can usually wake the PC from sleep/hibernate for a scheduled task if wake timers are enabled
 - Windows cannot guarantee power-on from a full shutdown; that depends on BIOS/UEFI options such as RTC alarm / Resume by Alarm / Wake by RTC
 - keep the laptop on AC power for the most reliable wake behavior
+
+## Full System Check
+
+For a repeatable end-to-end validation workflow, including live daemon, Supabase, MT5, recovery, and operator checks, use:
+
+- [trade_oracle_full_system_check_guide.md](/c:/Users/G_R_E/Documents/REPOSITORIES/TRADE_ORACLE/TRADE_ORACLE/documents/development/trade_oracle_full_system_check_guide.md)
+- [trade_oracle_full_system_check_prompt.md](/c:/Users/G_R_E/Documents/REPOSITORIES/TRADE_ORACLE/TRADE_ORACLE/documents/development/trade_oracle_full_system_check_prompt.md)
+- [trade_oracle_trading_health_report.md](/c:/Users/G_R_E/Documents/REPOSITORIES/TRADE_ORACLE/TRADE_ORACLE/documents/development/trade_oracle_trading_health_report.md)
+
+These are intended to let another LLM or engineer perform a real system check even with no prior project context.
+The system check now explicitly includes a trading-journey review based on benchmark events, forward-journal outcomes, and live broker exposure, not just runtime/process health.
 
 ## VS Code / GitHub Port Forwarding Reality Check
 
@@ -694,6 +734,21 @@ Useful modes:
 .venv-langgraph\Scripts\python.exe scripts\run_trade_oracle_daemon.py --poll-once
 ```
 
+One-click VS Code operator path:
+
+- `TRADE_ORACLE: Power On Forward Testing`
+  - launches MT5 if needed
+  - runs live readiness + Supabase checks
+  - runs MT5 preflight
+  - runs a daemon `--poll-once` sanity pass
+  - starts the long-running daemon
+  - starts the daemon watchdog
+- `TRADE_ORACLE: Power Off Forward Testing`
+- `TRADE_ORACLE: Power Off Forward Testing + MT5`
+- `TRADE_ORACLE: Show Forward Testing Status`
+
+The power-on task is the default VS Code build task, so `Ctrl+Shift+B` acts like the local forward-testing power button.
+
 Minimum env knobs for the daemon path:
 
 - `TRADE_ORACLE_RUNTIME_STATE_BACKEND=sqlite|supabase`
@@ -717,22 +772,33 @@ Current production boundary:
 - benchmark, audit, pending-review state, and forward journal are all backend-selectable
 - daemon Telegram cursor/checkpoint state is persisted through the runtime-state backend
 - local-server automation now defaults to watchdog-driven daemon startup, with `-RuntimeMode n8n` kept as fallback
-- that means this path is forward-test ready now, and one step away from the fully unified production loop
+- a full daemon-path supervised demo run has now reached broker acceptance on MT5 demo
+- the one-click VS Code operator stack now starts MT5, readiness checks, daemon poll sanity, daemon runtime, and watchdog from one task
+- that means this repo is now officially supervised forward-test ready on the daemon-first path
+
+Latest supervised demo acceptance proof:
+
+- Telegram review message sent from the daemon path
+- review resumed with `APPROVE`
+- risk recheck passed
+- MT5 order transmit succeeded
+- broker accepted a pending `SOLUSD` `BUY_STOP`
+- Supabase runtime state, benchmark events, and forward journal all recorded the successful `resume_execution_result`
 
 ## Supabase Unified Data Center Migration
 
-If we want one advanced cloud data center instead of mixed local SQLite, n8n data tables, and webhook-era handoff state, the clean production path is:
+The active production direction is one advanced cloud data center instead of mixed local SQLite, n8n data tables, and webhook-era handoff state:
 
-1. Move benchmark and audit events behind the backend-selectable storage layer.
+1. Benchmark and audit events live behind the backend-selectable storage layer.
    This repo now supports real `supabase` backends for those stores instead of placeholder errors.
-2. Promote pending-review queue and forward journal into dedicated runtime-state storage.
+2. Pending-review queue and forward journal live in dedicated runtime-state storage.
    This repo now exposes one backend-selectable runtime-state store for:
    `trade_oracle_pending_reviews`, `trade_oracle_forward_journal`, `trade_oracle_daemon_checkpoints`
 3. Keep SQLite as the local fail-safe during parity testing.
    Run dual-write or side-by-side verification before cutting operational reads fully to Supabase.
-4. Move daemon runtime state to Supabase only after the Python-only orchestrator is stable.
+4. Daemon runtime state is now Supabase-backed in the active forward-test environment.
    This keeps Telegram review, scheduling, and resume logic reconstructible after machine restarts.
-5. Cut platform reads to Supabase once cycle summaries, audit lookups, pending-review state, and review resume all match the current SQLite trail.
+5. Keep comparing cycle summaries, audit lookups, pending-review state, and review resume behavior against SQLite fallback during supervised testing.
 
 Relevant runtime-state settings:
 
@@ -750,4 +816,4 @@ Recommended production gate:
 - SQLite and Supabase produce matching benchmark cycle summaries for at least 20 supervised cycles.
 - SQLite and Supabase produce matching pending-review rows, forward-journal rows, and daemon checkpoints for the same cycles.
 - Telegram review/resume works with no n8n dependency.
-- Restart recovery can reconstruct pending reviews and Telegram polling cursor state from Supabase alone.
+- Restart recovery can reconstruct pending reviews and Telegram polling cursor state from Supabase alone. This has been proven once and should now be repeated during the reliability window.

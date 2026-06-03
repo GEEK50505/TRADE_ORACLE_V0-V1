@@ -432,7 +432,7 @@ class TradeOracleModelRegistry:
     deepseek_reasoner: ModelEndpointConfig = field(
         default_factory=lambda: ModelEndpointConfig(
             provider="openrouter",
-            model="deepseek/deepseek-r1",
+            model="qwen/qwen3-next-80b-a3b-instruct:free",
             api_key_env="OPENROUTER_API_KEY",
             temperature=0.1,
             base_url="https://openrouter.ai/api/v1",

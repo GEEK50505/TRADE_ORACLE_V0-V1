@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+from dotenv import load_dotenv
 
-from api.trade_oracle_platform_service import build_trade_oracle_platform_app
-from config import settings
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_SYMBOLS = [
     "AVAX/USDT",
@@ -36,6 +39,8 @@ def _parse_symbols(raw_symbols: str | None) -> list[str]:
 
 
 def _build_base_payload() -> dict[str, Any]:
+    from config import settings
+
     missing = [
         name
         for name, value in {
@@ -70,6 +75,11 @@ def main() -> None:
         description="Validate a local MT5 demo profile through the TRADE_ORACLE platform routes."
     )
     parser.add_argument(
+        "--env-file",
+        default=".env.n8n.local",
+        help="Env file to load before validating the MT5 demo profile.",
+    )
+    parser.add_argument(
         "--symbols",
         default=",".join(DEFAULT_SYMBOLS),
         help="Comma-separated strategy symbols to inspect. Default audits the core watchlist subset.",
@@ -80,6 +90,9 @@ def main() -> None:
         help="Optional path to save the JSON summary.",
     )
     args = parser.parse_args()
+    load_dotenv(REPO_ROOT / args.env_file, override=True)
+    from api.trade_oracle_platform_service import build_trade_oracle_platform_app
+    from config import settings
 
     symbols = _parse_symbols(args.symbols)
     payload = _build_base_payload()

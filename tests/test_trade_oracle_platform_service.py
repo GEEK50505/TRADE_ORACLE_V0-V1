@@ -280,6 +280,7 @@ def test_platform_service_supports_prebroker_live_demo_chain(monkeypatch):
     account_state_response = client.post(
         "/services/ops/ops/account/state",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",
@@ -311,6 +312,7 @@ def test_platform_service_supports_prebroker_live_demo_chain(monkeypatch):
     execution_response = client.post(
         "/services/ops/ops/execution/transmit-limit-order",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",
@@ -404,6 +406,7 @@ def test_platform_service_exposes_benchmark_summary_recent_and_cycle_views(monke
     execution_response = client.post(
         "/services/ops/ops/execution/transmit-limit-order",
         json={
+            "execution_backend": "match_trader",
             "broker_id": "broker",
             "email": "user@example.com",
             "password": "secret",

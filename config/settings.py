@@ -15,6 +15,19 @@ from dotenv import load_dotenv
 # Guarantees environment determinism and prevents key leakage in version control
 load_dotenv()
 
+
+def _parse_list_env(name: str, default: list[str]) -> list[str]:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return list(default)
+    try:
+        parsed = json.loads(raw_value)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
 # ==============================================================================
 # MAVEN TRADING PROPRIETARY FIRM RISK PARAMETERS
 # ==============================================================================
@@ -46,7 +59,9 @@ STOP_LOSS_ATR_MULTIPLIER = 1.5      # Structural invalidation point set to 1.5x 
 # ALGORITHMIC WATCHLIST (High-Liquidity Pairs)
 # ==============================================================================
 # Restricted entirely to major market capitalization assets to prevent execution slippage
-WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT', 'ADA/USDT', 'BNB/USDT']
+DEFAULT_WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'TON/USDT', 'ADA/USDT', 'BNB/USDT']
+WATCHLIST = _parse_list_env("TRADE_ORACLE_WATCHLIST", DEFAULT_WATCHLIST)
+TRADE_ORACLE_DAEMON_WATCHLIST = _parse_list_env("TRADE_ORACLE_DAEMON_WATCHLIST", WATCHLIST)
 
 # ==============================================================================
 # SECURE API CREDENTIAL ROUTING
@@ -106,13 +121,37 @@ TRADE_ORACLE_TELEGRAM_BOT_TOKEN = (
     or ""
 )
 TRADE_ORACLE_TELEGRAM_CHAT_ID = os.getenv("TRADE_ORACLE_TELEGRAM_CHAT_ID", "").strip()
-TRADE_ORACLE_DAEMON_CYCLE_INTERVAL_SECONDS = int(os.getenv("TRADE_ORACLE_DAEMON_CYCLE_INTERVAL_SECONDS", "14400"))
+TRADE_ORACLE_DAEMON_CYCLE_INTERVAL_SECONDS = int(os.getenv("TRADE_ORACLE_DAEMON_CYCLE_INTERVAL_SECONDS", "3600"))
 TRADE_ORACLE_DAEMON_TELEGRAM_POLL_TIMEOUT_SECONDS = int(
     os.getenv("TRADE_ORACLE_DAEMON_TELEGRAM_POLL_TIMEOUT_SECONDS", "20")
 )
 TRADE_ORACLE_DAEMON_IDLE_SLEEP_SECONDS = float(os.getenv("TRADE_ORACLE_DAEMON_IDLE_SLEEP_SECONDS", "2"))
 TRADE_ORACLE_DAEMON_START_IMMEDIATELY = os.getenv("TRADE_ORACLE_DAEMON_START_IMMEDIATELY", "1").strip().lower() in {"1", "true", "yes", "y"}
 TRADE_ORACLE_DAEMON_SEND_CYCLE_SUMMARY = os.getenv("TRADE_ORACLE_DAEMON_SEND_CYCLE_SUMMARY", "1").strip().lower() in {"1", "true", "yes", "y"}
+TRADE_ORACLE_DAEMON_AUTO_APPROVE_REVIEWS = os.getenv(
+    "TRADE_ORACLE_DAEMON_AUTO_APPROVE_REVIEWS",
+    "0",
+).strip().lower() in {"1", "true", "yes", "y"}
+TRADE_ORACLE_DAEMON_TELEGRAM_REQUEST_ATTEMPTS = int(
+    os.getenv("TRADE_ORACLE_DAEMON_TELEGRAM_REQUEST_ATTEMPTS", "3")
+)
+TRADE_ORACLE_DAEMON_TELEGRAM_RETRY_BASE_SECONDS = float(
+    os.getenv("TRADE_ORACLE_DAEMON_TELEGRAM_RETRY_BASE_SECONDS", "2")
+)
+TRADE_ORACLE_DAEMON_CYCLE_LOCK_PATH = os.getenv(
+    "TRADE_ORACLE_DAEMON_CYCLE_LOCK_PATH",
+    "results/trade_oracle_cycle.lock",
+)
+TRADE_ORACLE_DAEMON_CYCLE_LOCK_STALE_SECONDS = int(
+    os.getenv("TRADE_ORACLE_DAEMON_CYCLE_LOCK_STALE_SECONDS", "7200")
+)
+TRADE_ORACLE_DAEMON_RUNTIME_LOCK_PATH = os.getenv(
+    "TRADE_ORACLE_DAEMON_RUNTIME_LOCK_PATH",
+    "results/trade_oracle_daemon_runtime.lock",
+)
+TRADE_ORACLE_DAEMON_RUNTIME_LOCK_STALE_SECONDS = int(
+    os.getenv("TRADE_ORACLE_DAEMON_RUNTIME_LOCK_STALE_SECONDS", "21600")
+)
 
 # Phase 1 Persistent State Memory (PostgreSQL Cluster)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -127,8 +166,8 @@ MATCH_TRADER_BROKER_ID = os.getenv("MATCH_TRADER_BROKER_ID")
 MATCH_TRADER_BASE_URL = os.getenv("MATCH_TRADER_BASE_URL", "https://mtr-api.match-trader.com")
 
 # Phase 4 Execution Backend Selection
-# Keep Match-Trader as the operational default until the MT5 bridge is fully validated.
-TRADE_ORACLE_EXECUTION_BACKEND = os.getenv("TRADE_ORACLE_EXECUTION_BACKEND", "match_trader").strip().lower()
+# FTMO MT5 is the primary operational default.
+TRADE_ORACLE_EXECUTION_BACKEND = os.getenv("TRADE_ORACLE_EXECUTION_BACKEND", "mt5").strip().lower()
 
 # Phase 4 Alternative Execution Bridge (MetaTrader 5)
 MT5_LOGIN = os.getenv("MT5_LOGIN")
@@ -140,7 +179,55 @@ try:
     MT5_SYMBOL_MAP = json.loads(os.getenv("MT5_SYMBOL_MAP", "{}") or "{}")
 except json.JSONDecodeError:
     MT5_SYMBOL_MAP = {}
+TRADE_ORACLE_MT5_DUPLICATE_GUARD_ENABLED = os.getenv(
+    "TRADE_ORACLE_MT5_DUPLICATE_GUARD_ENABLED",
+    "1",
+).strip().lower() in {"1", "true", "yes", "y"}
+TRADE_ORACLE_MT5_PRICE_TOLERANCE_POINTS = int(os.getenv("TRADE_ORACLE_MT5_PRICE_TOLERANCE_POINTS", "2"))
 
 # Phase 4 Live Demo Execution Policy
 # Keep the first supervised live phase simple unless partial-close support is proven.
 TRADE_ORACLE_LIVE_TP_MODE = os.getenv("TRADE_ORACLE_LIVE_TP_MODE", "tp1_only").strip().lower()
+
+# ==============================================================================
+# PHASE 3 SHADOW MODE — Live LLM counterfactual A/B evaluation
+# The shadow engine calls Google AI Studio on every cycle but NEVER transmits
+# orders to MT5. Decisions are logged to Supabase under benchmark_variant
+# 'v1_live_llm_shadow' for MAE/MFE tracking.
+# ==============================================================================
+
+# Master switch — set to "0" to disable the entire shadow path
+TRADE_ORACLE_SHADOW_MODE_ENABLED: bool = (
+    os.getenv("TRADE_ORACLE_SHADOW_MODE_ENABLED", "1").strip().lower()
+    in {"1", "true", "yes", "y"}
+)
+
+# Google AI Studio key (the model registry reads GOOGLE_API_KEY; GEMINI_API_KEY
+# is the legacy name used by inference.py standalone diagnostics only)
+GOOGLE_API_KEY: str | None = os.getenv("GOOGLE_API_KEY")
+
+# Inter-call cooldown enforced by asyncio.Lock — prevents >9 RPM under any load
+TRADE_ORACLE_SHADOW_LLM_COOLDOWN_SECONDS: float = float(
+    os.getenv("TRADE_ORACLE_SHADOW_LLM_COOLDOWN_SECONDS", "6.5")
+)
+
+# Worker-bee model for standard cycles (15 RPM free tier)
+TRADE_ORACLE_SHADOW_LLM_MODEL_WORKER: str = os.getenv(
+    "TRADE_ORACLE_SHADOW_LLM_MODEL_WORKER", "gemini-2.0-flash"
+)
+
+# Synthesis model for high-conviction setups (10 RPM free tier)
+# gemini-2.5-pro is EXCLUDED to protect its much lower daily quota
+TRADE_ORACLE_SHADOW_LLM_MODEL_SYNTHESIS: str = os.getenv(
+    "TRADE_ORACLE_SHADOW_LLM_MODEL_SYNTHESIS", "gemini-2.5-flash"
+)
+
+# Confidence threshold above which the synthesis model is preferred
+TRADE_ORACLE_SHADOW_LLM_CONFIDENCE_THRESHOLD: float = float(
+    os.getenv("TRADE_ORACLE_SHADOW_LLM_CONFIDENCE_THRESHOLD", "0.75")
+)
+
+# Supabase benchmark_variant tag for shadow journal entries
+TRADE_ORACLE_SHADOW_BENCHMARK_VARIANT: str = os.getenv(
+    "TRADE_ORACLE_SHADOW_BENCHMARK_VARIANT", "v1_live_llm_shadow"
+)

@@ -12,17 +12,16 @@ Usage:
 import os
 import sys
 import json
+import argparse
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 # Ensure project root is in the path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from config.settings import (
-    TRADE_ORACLE_RUNTIME_STATE_BACKEND,
-    TRADE_ORACLE_RUNTIME_STATE_DB_PATH,
-    TRADE_ORACLE_SUPABASE_DAEMON_CHECKPOINT_TABLE,
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -42,13 +41,15 @@ def get_runtime_store():
         sys.exit(1)
 
 def run_validation():
+    from config import settings
+
     logger.info(f"=== Starting Daemon Restart Recovery Validation ===")
-    logger.info(f"Configured Backend: {TRADE_ORACLE_RUNTIME_STATE_BACKEND.upper()}")
+    logger.info(f"Configured Backend: {settings.TRADE_ORACLE_RUNTIME_STATE_BACKEND.upper()}")
     
-    if TRADE_ORACLE_RUNTIME_STATE_BACKEND == "sqlite":
-        logger.info(f"Database Path: {TRADE_ORACLE_RUNTIME_STATE_DB_PATH}")
+    if settings.TRADE_ORACLE_RUNTIME_STATE_BACKEND == "sqlite":
+        logger.info(f"Database Path: {settings.TRADE_ORACLE_RUNTIME_STATE_DB_PATH}")
     else:
-        logger.info(f"Target Checkpoint Table: {TRADE_ORACLE_SUPABASE_DAEMON_CHECKPOINT_TABLE}")
+        logger.info(f"Target Checkpoint Table: {settings.TRADE_ORACLE_SUPABASE_DAEMON_CHECKPOINT_TABLE}")
 
     store = get_runtime_store()
 
@@ -68,7 +69,7 @@ def run_validation():
             return
         logger.info(f"Successfully saved checkpoint: {cursor_key} -> {mock_update_id}")
     except Exception as e:
-        logger.error(f"Failed to write checkpoint to {TRADE_ORACLE_RUNTIME_STATE_BACKEND}: {e}")
+        logger.error(f"Failed to write checkpoint to {settings.TRADE_ORACLE_RUNTIME_STATE_BACKEND}: {e}")
         sys.exit(1)
 
     # 2. Simulate Cold Restart
@@ -93,12 +94,12 @@ def run_validation():
             sys.exit(1)
             
     except Exception as e:
-        logger.error(f"Failed to read checkpoint from {TRADE_ORACLE_RUNTIME_STATE_BACKEND}: {e}")
+        logger.error(f"Failed to read checkpoint from {settings.TRADE_ORACLE_RUNTIME_STATE_BACKEND}: {e}")
         sys.exit(1)
 
     # 4. Final Assessment
     logger.info("\n=== Validation Complete ===")
-    if TRADE_ORACLE_RUNTIME_STATE_BACKEND == "supabase":
+    if settings.TRADE_ORACLE_RUNTIME_STATE_BACKEND == "supabase":
         logger.info("Supabase restart recovery is PROVEN. The daemon can safely persist its cursor.")
         logger.info("You are now clear to retire n8n and lock the daemon into active production.")
     else:
@@ -106,4 +107,8 @@ def run_validation():
         logger.info("Next Step: Set TRADE_ORACLE_RUNTIME_STATE_BACKEND=supabase and run this test again to verify parity.")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate daemon restart recovery for the configured runtime-state backend.")
+    parser.add_argument("--env-file", default=".env.n8n.local", help="Env file to load before validation.")
+    args = parser.parse_args()
+    load_dotenv(REPO_ROOT / args.env_file, override=True)
     run_validation()

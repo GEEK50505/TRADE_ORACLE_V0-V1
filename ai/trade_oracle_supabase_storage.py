@@ -12,7 +12,7 @@ from config import settings
 
 from .trade_oracle_audit import TradeOracleAuditEvent
 from .trade_oracle_benchmark import TradeOracleBenchmarkEvent
-from .trade_oracle_supabase import build_trade_oracle_supabase_client, coerce_supabase_rows
+from .trade_oracle_supabase import build_trade_oracle_supabase_client, coerce_supabase_rows, execute_supabase_request
 
 
 def _coerce_payload(row: dict[str, Any], *field_names: str) -> dict[str, Any]:
@@ -74,9 +74,8 @@ class TradeOracleSupabaseAuditStore:
             status=status,
             payload=payload or {},
         )
-        response = (
-            self.supabase_client.table(self.table_name)
-            .insert(
+        response = execute_supabase_request(
+            lambda: self.supabase_client.table(self.table_name).insert(
                 {
                     "event_id": event.event_id,
                     "created_at_utc": event.created_at_utc,
@@ -88,7 +87,6 @@ class TradeOracleSupabaseAuditStore:
                     "payload": event.payload,
                 }
             )
-            .execute()
         )
         rows = coerce_supabase_rows(response)
         return self._row_to_event(rows[0]) if rows else event
@@ -105,17 +103,22 @@ class TradeOracleSupabaseAuditStore:
             query = query.eq("event_type", event_type)
         if status:
             query = query.eq("status", status)
-        rows = coerce_supabase_rows(query.order("created_at_utc", desc=True).limit(max(1, int(limit))).execute())
+        rows = coerce_supabase_rows(
+            execute_supabase_request(
+                lambda: query.order("created_at_utc", desc=True).limit(max(1, int(limit)))
+            )
+        )
         return [self._row_to_event(row) for row in rows]
 
     def list_thread_events(self, thread_id: str, *, limit: int = 100) -> list[TradeOracleAuditEvent]:
         rows = coerce_supabase_rows(
-            self.supabase_client.table(self.table_name)
-            .select("*")
-            .eq("thread_id", thread_id)
-            .order("created_at_utc", desc=True)
-            .limit(max(1, int(limit)))
-            .execute()
+            execute_supabase_request(
+                lambda: self.supabase_client.table(self.table_name)
+                .select("*")
+                .eq("thread_id", thread_id)
+                .order("created_at_utc", desc=True)
+                .limit(max(1, int(limit)))
+            )
         )
         return [self._row_to_event(row) for row in rows]
 
@@ -179,9 +182,8 @@ class TradeOracleSupabaseBenchmarkStore:
             decision=decision,
             payload=payload or {},
         )
-        response = (
-            self.supabase_client.table(self.table_name)
-            .insert(
+        response = execute_supabase_request(
+            lambda: self.supabase_client.table(self.table_name).insert(
                 {
                     "event_id": event.event_id,
                     "created_at_utc": event.created_at_utc,
@@ -198,7 +200,6 @@ class TradeOracleSupabaseBenchmarkStore:
                     "payload": event.payload,
                 }
             )
-            .execute()
         )
         rows = coerce_supabase_rows(response)
         return self._row_to_event(rows[0]) if rows else event
@@ -221,17 +222,22 @@ class TradeOracleSupabaseBenchmarkStore:
             query = query.eq("cycle_id", cycle_id)
         if status:
             query = query.eq("status", status)
-        rows = coerce_supabase_rows(query.order("created_at_utc", desc=True).limit(max(1, int(limit))).execute())
+        rows = coerce_supabase_rows(
+            execute_supabase_request(
+                lambda: query.order("created_at_utc", desc=True).limit(max(1, int(limit)))
+            )
+        )
         return [self._row_to_event(row) for row in rows]
 
     def list_cycle_events(self, cycle_id: str, *, limit: int = 100) -> list[TradeOracleBenchmarkEvent]:
         rows = coerce_supabase_rows(
-            self.supabase_client.table(self.table_name)
-            .select("*")
-            .eq("cycle_id", cycle_id)
-            .order("created_at_utc", desc=True)
-            .limit(max(1, int(limit)))
-            .execute()
+            execute_supabase_request(
+                lambda: self.supabase_client.table(self.table_name)
+                .select("*")
+                .eq("cycle_id", cycle_id)
+                .order("created_at_utc", desc=True)
+                .limit(max(1, int(limit)))
+            )
         )
         return [self._row_to_event(row) for row in rows]
 
