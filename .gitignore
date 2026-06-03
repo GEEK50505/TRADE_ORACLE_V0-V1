@@ -45,3 +45,9 @@ venv.bak/
 # Test cache / temp artifacts
 .pytest_cache/
 pytest-cache-files-*
+
+# Database files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+results/
