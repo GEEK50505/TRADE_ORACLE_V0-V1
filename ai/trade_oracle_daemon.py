@@ -20,6 +20,7 @@ from risk.manager import RiskManager
 
 from .langgraph_orchestrator import (
     LangGraphEvaluationResult,
+    LangGraphExecutionCandidate,
     LangGraphSupervisorOrchestrator,
     resolve_live_take_profit,
 )
@@ -282,6 +283,7 @@ class HttpxTelegramBotClient:
             {
                 "chat_id": chat_id,
                 "text": text,
+                "parse_mode": "Markdown",
                 "reply_markup": {
                     "inline_keyboard": [
                         [
@@ -300,7 +302,11 @@ class HttpxTelegramBotClient:
     async def send_message(self, *, chat_id: str, text: str) -> str:
         response = await self._post_json(
             "sendMessage",
-            {"chat_id": chat_id, "text": text},
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+            },
         )
         if response is None:
             raise RuntimeError("Telegram send_message returned no response.")
@@ -312,7 +318,12 @@ class HttpxTelegramBotClient:
             return
         await self._post_json(
             "editMessageText",
-            {"chat_id": chat_id, "message_id": int(message_id), "text": text},
+            {
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": text,
+                "parse_mode": "Markdown",
+            },
         )
 
     async def answer_callback_query(self, *, callback_query_id: str, text: str = "") -> None:
@@ -527,13 +538,23 @@ class TradeOracleSingleRuntimeDaemon:
     async def _send_review_prompt(self, pending_record: dict[str, Any]) -> str:
         if self.telegram_client is None or not self.telegram_chat_id:
             return ""
+        use_langgraph = settings.TRADE_ORACLE_USE_LANGGRAPH
+        engine_ver = "v2 (LangGraph)" if use_langgraph else "v0 (Deterministic)"
+        candidate = pending_record.get("candidate", {})
         text = (
-            "TRADE_ORACLE review needed\n"
-            f"Symbol: {pending_record.get('symbol') or 'n/a'}\n"
-            f"Direction: {pending_record.get('direction') or 'n/a'}\n"
-            f"Cycle: {pending_record.get('cycle_id') or 'n/a'}\n"
-            f"Run: {pending_record.get('run_id') or 'n/a'}\n"
-            f"Thread: {pending_record.get('thread_id') or 'n/a'}"
+            "🔔 *TRADE_ORACLE Review Required*\n"
+            "----------------------------------------\n"
+            f"Engine: *{engine_ver}*\n"
+            f"Symbol: `{pending_record.get('symbol') or 'n/a'}`\n"
+            f"Direction: `{pending_record.get('direction') or 'n/a'}`\n"
+            f"Entry Price: `{candidate.get('entry_price', 'n/a')}`\n"
+            f"Stop Loss: `{candidate.get('stop_loss', 'n/a')}`\n"
+            f"Take Profit: `{candidate.get('take_profit', 'n/a')}`\n"
+            f"Size: `{candidate.get('size_tokens', 'n/a')}` tokens\n"
+            f"Conviction: `{candidate.get('confidence', 0.0) * 10:.1f}/10`\n"
+            f"Rationale: {str(candidate.get('rationale', 'n/a')).replace('_', '\\_')}\n\n"
+            f"Cycle ID: `{pending_record.get('cycle_id') or 'n/a'}`\n"
+            f"Thread ID: `{pending_record.get('thread_id') or 'n/a'}`"
         )
         return await self.telegram_client.send_review_request(
             chat_id=self.telegram_chat_id,
@@ -542,6 +563,7 @@ class TradeOracleSingleRuntimeDaemon:
         )
 
     async def _send_cycle_summary_message(self, text: str, *, chat_id: str | None = None) -> None:
+        logger.info("[Telegram Alert] Sending cycle summary:\n%s", text)
         if self.telegram_client is None or not self.send_cycle_summary:
             return
         resolved_chat_id = chat_id or self.telegram_chat_id
@@ -698,16 +720,126 @@ class TradeOracleSingleRuntimeDaemon:
         )
 
         if not pending_review:
-            await self._send_cycle_summary_message(
-                "TRADE_ORACLE cycle summary\n"
-                f"Outcome: {outcome}\n"
-                f"Symbol: {symbol or 'n/a'}\n"
-                f"Direction: {resolved_direction or 'n/a'}\n"
-                f"Cycle: {cycle_id}\n"
-                f"Run: {run_id}\n"
-                f"Thread: {thread_id or 'n/a'}\n"
-                f"Transmitted: {str(bool(transmitted))}"
+            use_langgraph = settings.TRADE_ORACLE_USE_LANGGRAPH
+            engine_ver = "v2 (LangGraph Supervisor)" if use_langgraph else "v0 (Deterministic)"
+            
+            account_state = (summary or {}).get("account_state") or {}
+            balance = float(account_state.get("current_balance", settings.TRADE_ORACLE_CURRENT_BALANCE))
+            watermark = float(account_state.get("highest_equity", settings.TRADE_ORACLE_HIGHEST_EQUITY))
+            active_trades = int(account_state.get("active_trades_count", settings.TRADE_ORACLE_ACTIVE_TRADES_COUNT))
+            
+            watchlist_lines = []
+            scanner_rows_list = (summary or {}).get("scanner_rows") or []
+            detected_symbols = {row.get("symbol"): row for row in scanner_rows_list if row.get("symbol")}
+            for w_symbol in self.watchlist:
+                if w_symbol in detected_symbols:
+                    row = detected_symbols[w_symbol]
+                    qual = row.get("setup_quality", 0.0)
+                    reg = row.get("regime", "")
+                    watchlist_lines.append(f"  • {w_symbol}: *{reg}* setup detected (Quality: {qual:.2f})")
+                else:
+                    watchlist_lines.append(f"  • {w_symbol}: No setup")
+            watchlist_str = "\n".join(watchlist_lines)
+
+            # Compile Shadow Mode (v1) status
+            shadow_result_dict = (summary or {}).get("shadow_result")
+            if shadow_result_dict is not None:
+                sh_status = shadow_result_dict.get("status")
+                sh_symbol = shadow_result_dict.get("symbol") or "n/a"
+                sh_dir = shadow_result_dict.get("direction") or "n/a"
+                sh_confidence = shadow_result_dict.get("confidence", 0.0)
+                sh_rationale = (shadow_result_dict.get("rationale") or "n/a").replace("_", "\\_")
+                sh_model = shadow_result_dict.get("model_used") or "n/a"
+                sh_error = str(shadow_result_dict.get("error") or "").replace("_", "\\_") if shadow_result_dict.get("error") else None
+                
+                if sh_status == "shadow_trade":
+                    sh_entry = shadow_result_dict.get("entry_price", 0.0)
+                    sh_sl = shadow_result_dict.get("stop_loss", 0.0)
+                    sh_tp1 = shadow_result_dict.get("tp1", 0.0)
+                    sh_tp2 = shadow_result_dict.get("tp2", 0.0)
+                    shadow_status_str = (
+                        f"  • Status: `Active (Trade Selected)`\n"
+                        f"  • Symbol: `{sh_symbol}`\n"
+                        f"  • Direction: `{sh_dir}`\n"
+                        f"  • Entry Price: `{sh_entry:.6f}`\n"
+                        f"  • Stop Loss: `{sh_sl:.6f}`\n"
+                        f"  • TP1: `{sh_tp1:.6f}` | TP2: `{sh_tp2:.6f}`\n"
+                        f"  • Conviction: `{sh_confidence * 10:.1f}/10`\n"
+                        f"  • Rationale: {sh_rationale}\n"
+                        f"  • Model: `{sh_model}`"
+                    )
+                elif sh_status == "shadow_no_trade":
+                    shadow_status_str = (
+                        f"  • Status: `Active (PASS)`\n"
+                        f"  • Rationale: {sh_rationale}\n"
+                        f"  • Model: `{sh_model}`"
+                    )
+                elif sh_status == "shadow_error":
+                    shadow_status_str = (
+                        f"  • Status: `Error`\n"
+                        f"  • Error Message: `{sh_error}`\n"
+                        f"  • Model: `{sh_model}`"
+                    )
+                elif sh_status == "shadow_disabled":
+                    shadow_status_str = "  • Status: `Disabled`"
+                elif sh_status == "shadow_no_candidates":
+                    shadow_status_str = "  • Status: `Inactive (No setups to evaluate)`"
+                else:
+                    shadow_status_str = f"  • Status: `{sh_status}`"
+            else:
+                if "review_action" in (summary or {}):
+                    shadow_status_str = "  • Status: `Inactive (Resumed Cycle)`"
+                elif not settings.TRADE_ORACLE_SHADOW_MODE_ENABLED:
+                    shadow_status_str = "  • Status: `Disabled`"
+                elif getattr(self, "shadow_runner", None) is None:
+                    shadow_status_str = "  • Status: `Inactive (Missing API Key)`"
+                elif not scanner_rows_list:
+                    shadow_status_str = "  • Status: `Inactive (No setups to evaluate)`"
+                else:
+                    shadow_status_str = "  • Status: `Inactive (Bypassed/Unknown)`"
+
+            if candidate is not None:
+                pos_sizing = (summary or {}).get("position_sizing") or getattr(candidate, "position_sizing", {}) or {}
+                size_tokens = pos_sizing.get("tokens", getattr(candidate, "size_tokens", 0.0))
+                usd_val = pos_sizing.get("usd_value", float(size_tokens) * candidate.entry_price if size_tokens else 0.0)
+                confidence = getattr(candidate, "confidence", 1.0)
+                rationale = (getattr(candidate, "rationale", "") or "n/a").replace("_", "\\_")
+                
+                candidate_str = (
+                    f"  • Symbol: `{candidate.symbol}`\n"
+                    f"  • Direction: `{candidate.direction}`\n"
+                    f"  • Entry Price: `{candidate.entry_price:.6f}`\n"
+                    f"  • Stop Loss: `{candidate.stop_loss:.6f}`\n"
+                    f"  • Take Profit: `{candidate.take_profit:.6f}`\n"
+                    f"  • Size: `{size_tokens}` tokens (${usd_val:.2f})\n"
+                    f"  • Conviction: `{confidence * 10:.1f}/10`\n"
+                    f"  • Rationale: {rationale}"
+                )
+            else:
+                candidate_str = "  • None selected"
+
+            cycle_summary_text = (
+                "📊 *TRADE_ORACLE Cycle Dashboard*\n"
+                "----------------------------------------\n"
+                f"Engine: *{engine_ver}*\n"
+                f"Cycle ID: `{cycle_id}`\n"
+                f"Outcome: `{outcome}`\n\n"
+                "💰 *Account State:*\n"
+                f"  • Balance: `${balance:.2f}`\n"
+                f"  • Peak Watermark: `${watermark:.2f}`\n"
+                f"  • Concurrency: `{active_trades}/4` active positions\n\n"
+                "🔍 *Watchlist Scan:*\n"
+                f"{watchlist_str}\n\n"
+                "👤 *Shadow Engine (v1):*\n"
+                f"{shadow_status_str}\n\n"
+                "🎯 *Selected Candidate:*\n"
+                f"{candidate_str}\n\n"
+                "⚡ *Execution:*\n"
+                f"  • Order Transmitted: `{transmitted}`\n"
+                f"  • Run ID: `{run_id}`\n"
+                f"  • Thread ID: `{thread_id or 'n/a'}`"
             )
+            await self._send_cycle_summary_message(cycle_summary_text)
 
     def _write_shadow_journal(self, result: ShadowCycleResult, *, run_id: str, cycle_id: str) -> None:
         """
@@ -831,6 +963,7 @@ class TradeOracleSingleRuntimeDaemon:
         run_id = _build_run_id(seed)
         cycle_id = _build_cycle_id(seed)
         account_state = await self._resolve_account_state()
+        shadow_result = None
 
         # --- CIRCUIT BREAKER CHECK ---
         try:
@@ -895,8 +1028,8 @@ class TradeOracleSingleRuntimeDaemon:
                 )
                 if self.telegram_client is not None and self.telegram_chat_id:
                     msg = (
-                        "👤 *[ShadowMode v1]* Cycle Evaluation\n"
-                        f"Status: `{shadow_result.status}`\n"
+                        "👤 *Shadow Mode (v1)* Cycle Evaluation\n"
+                        f"Status: `{shadow_result.status.replace('_', ' ').title()}`\n"
                         f"Symbol: `{shadow_result.symbol or 'n/a'}`\n"
                         f"Direction: `{shadow_result.direction or 'PASS'}`\n"
                     )
@@ -906,32 +1039,118 @@ class TradeOracleSingleRuntimeDaemon:
                             f"Stop Loss: `{shadow_result.stop_loss:.6f}`\n"
                             f"TP1: `{shadow_result.tp1:.6f}` | TP2: `{shadow_result.tp2:.6f}`\n"
                             f"Conviction: `{shadow_result.confidence * 10:.1f}/10`\n"
-                            f"Rationale: {shadow_result.rationale}\n"
+                            f"Rationale: {shadow_result.rationale.replace('_', '\\_')}\n"
                         )
                     else:
                         if shadow_result.error:
-                            msg += f"Error: `{shadow_result.error}`\n"
+                            msg += f"Error: `{shadow_result.error.replace('_', '\\_')}`\n"
                         else:
-                            msg += f"Rationale: {shadow_result.rationale or 'All setups passed/ignored'}\n"
+                            msg += f"Rationale: {shadow_result.rationale.replace('_', '\\_') or 'All setups passed/ignored'}\n"
                     msg += f"Model: `{shadow_result.model_used}`"
                     try:
                         await self.telegram_client.send_message(chat_id=self.telegram_chat_id, text=msg)
                     except Exception:
-                        logger.exception("[ShadowMode] Failed to send Telegram alert.")
+                        logger.exception("[ShadowMode] Failed to send Telegram alert. Message was:\n%s", msg)
             except Exception:
                 logger.exception("[ShadowMode] Shadow cycle raised unexpectedly — primary cycle continues.")
         # -----------------------------------------------------------------------
         # END SHADOW MODE BLOCK
         # -----------------------------------------------------------------------
 
-        evaluations = await self.orchestrator.evaluate_batch(
-            scanner_rows,
-            current_balance=account_state.current_balance,
-            highest_equity=account_state.highest_equity,
-            active_trades_count=account_state.active_trades_count,
-            run_id=run_id,
-            event_source="single_runtime_daemon",
-        )
+        if settings.TRADE_ORACLE_USE_LANGGRAPH or not isinstance(self.orchestrator, LangGraphSupervisorOrchestrator):
+            evaluations = await self.orchestrator.evaluate_batch(
+                scanner_rows,
+                current_balance=account_state.current_balance,
+                highest_equity=account_state.highest_equity,
+                active_trades_count=account_state.active_trades_count,
+                run_id=run_id,
+                event_source="single_runtime_daemon",
+            )
+        else:
+            logger.info("TRADE_ORACLE_USE_LANGGRAPH is False. Routing setups to deterministic v0 engine...")
+            evaluations = []
+            for scanner_row in scanner_rows:
+                symbol = str(scanner_row.get("symbol", ""))
+                regime = str(scanner_row.get("regime", ""))
+                direction = "BUY" if regime == "BULLISH" else "SELL"
+                entry_price = float(scanner_row.get("current_price", 0.0))
+                atr = float(scanner_row.get("atr", 0.0))
+                
+                thread_id = f"det-{symbol.replace('/', '-')}-{cycle_id}"
+                
+                risk_manager = RiskManager(
+                    current_balance=account_state.current_balance,
+                    highest_equity=account_state.highest_equity,
+                    active_trades_count=account_state.active_trades_count,
+                )
+                
+                position_sizing = risk_manager.calculate_position_size(
+                    entry_price=entry_price,
+                    atr=atr,
+                    direction=self._risk_direction(direction),
+                )
+                
+                if position_sizing is None:
+                    logger.info("Deterministic candidate for %s rejected by risk manager.", symbol)
+                    execute_trade = False
+                    stop_loss = 0.0
+                    take_profit = 0.0
+                    size_tokens = 0.0
+                    position_sizing = {}
+                    execution_status = "risk_rejected"
+                    execution_tp_mode = "unresolved"
+                    status = "no_trade"
+                else:
+                    execute_trade = True
+                    stop_loss = float(position_sizing.get("stop_loss", 0.0))
+                    take_profit, execution_tp_mode = resolve_live_take_profit(position_sizing)
+                    size_tokens = float(position_sizing.get("tokens", 0.0))
+                    execution_status = "approved"
+                    status = "completed"
+                
+                candidate = LangGraphExecutionCandidate(
+                    execute_trade=execute_trade,
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    size_tokens=size_tokens,
+                    confidence=float(scanner_row.get("setup_quality", 1.0)),
+                    execution_status=execution_status,
+                    execution_tp_mode=execution_tp_mode,
+                    review_required=False,
+                    rationale=str(scanner_row.get("rationale", "")),
+                    position_sizing=position_sizing,
+                    final_decision={
+                        "decision": direction if execute_trade else "PASS",
+                        "asset_ticker": symbol,
+                        "confidence": float(scanner_row.get("setup_quality", 1.0)),
+                        "execution_status": execution_status,
+                        "entry_context": str(scanner_row.get("rationale", "")),
+                        "position_sizing": position_sizing,
+                    },
+                    raw_setup=scanner_row,
+                    thread_id=thread_id,
+                )
+                
+                eval_result = LangGraphEvaluationResult(
+                    status=status,
+                    thread_id=thread_id,
+                    interrupted=False,
+                    review_required=False,
+                    raw_setup=scanner_row,
+                    review_context={},
+                    final_decision=candidate.final_decision,
+                    gatekeeper_status="pass",
+                    audit_trail=["Deterministic bypass of LangGraph supervisor."],
+                    tool_results=[],
+                    specialist_reports=[],
+                    errors=[],
+                    thread_metadata={},
+                    candidate=candidate,
+                )
+                evaluations.append(eval_result)
         summary_decision = self._summary_decision(evaluations)
         top_candidate = self._top_candidate(evaluations)
         pending_evaluations = [evaluation for evaluation in evaluations if evaluation.status == "pending_review"]
@@ -980,7 +1199,13 @@ class TradeOracleSingleRuntimeDaemon:
                 candidate=top_candidate,
                 pending_review=True,
                 transmitted=False,
-                summary={"pending_review_count": len(pending_evaluations), "thread_ids": [item.thread_id for item in pending_evaluations]},
+                summary={
+                    "pending_review_count": len(pending_evaluations),
+                    "thread_ids": [item.thread_id for item in pending_evaluations],
+                    "scanner_rows": scanner_rows,
+                    "account_state": account_state.model_dump(),
+                    "shadow_result": shadow_result.model_dump() if shadow_result is not None else None,
+                },
             )
             return TradeOracleCycleResult(
                 run_id=run_id,
@@ -998,7 +1223,12 @@ class TradeOracleSingleRuntimeDaemon:
                 thread_id="",
                 outcome="no_trade",
                 candidate=top_candidate,
-                summary={"candidate_count": len([item for item in evaluations if item.candidate is not None])},
+                summary={
+                    "candidate_count": len([item for item in evaluations if item.candidate is not None]),
+                    "scanner_rows": scanner_rows,
+                    "account_state": account_state.model_dump(),
+                    "shadow_result": shadow_result.model_dump() if shadow_result is not None else None,
+                },
             )
             return TradeOracleCycleResult(
                 run_id=run_id,
@@ -1030,7 +1260,12 @@ class TradeOracleSingleRuntimeDaemon:
                 thread_id=top_candidate.thread_id,
                 outcome="risk_rejected",
                 candidate=top_candidate,
-                summary={"reason": "risk_gate_denied"},
+                summary={
+                    "reason": "risk_gate_denied",
+                    "scanner_rows": scanner_rows,
+                    "account_state": account_state.model_dump(),
+                    "shadow_result": shadow_result.model_dump() if shadow_result is not None else None,
+                },
             )
             return TradeOracleCycleResult(
                 run_id=run_id,
@@ -1055,7 +1290,12 @@ class TradeOracleSingleRuntimeDaemon:
             outcome=outcome,
             candidate=top_candidate,
             transmitted=transmitted,
-            summary={"position_sizing": position_sizing},
+            summary={
+                "position_sizing": position_sizing,
+                "scanner_rows": scanner_rows,
+                "account_state": account_state.model_dump(),
+                "shadow_result": shadow_result.model_dump() if shadow_result is not None else None,
+            },
         )
         return TradeOracleCycleResult(
             run_id=run_id,
@@ -1090,6 +1330,9 @@ class TradeOracleSingleRuntimeDaemon:
             payload={"review_action": review_action},
         )
 
+        use_langgraph = settings.TRADE_ORACLE_USE_LANGGRAPH
+        engine_ver = "v2 (LangGraph)" if use_langgraph else "v0 (Deterministic)"
+
         candidate = evaluation.candidate
         if candidate is None or not candidate.execute_trade or candidate.execution_status != "approved":
             self.runtime_state_store.resolve_pending_review(
@@ -1106,19 +1349,27 @@ class TradeOracleSingleRuntimeDaemon:
                 thread_id=thread_id,
                 outcome="no_trade",
                 candidate=candidate,
-                summary={"review_action": review_action},
+                summary={
+                    "review_action": review_action,
+                    "scanner_rows": [evaluation.raw_setup] if evaluation.raw_setup else [],
+                    "account_state": account_state.model_dump(),
+                },
             )
             if self.telegram_client is not None and telegram_chat_id and telegram_message_id:
                 await self.telegram_client.edit_review_message(
                     chat_id=telegram_chat_id,
                     message_id=telegram_message_id,
                     text=(
-                        "TRADE_ORACLE review resolved\n"
-                        f"Action: {review_action}\n"
-                        "Outcome: no_trade\n"
-                        f"Cycle: {cycle_id}\n"
-                        f"Run: {run_id}\n"
-                        f"Thread: {thread_id}"
+                        "✅ *TRADE_ORACLE Review Resolved*\n"
+                        "----------------------------------------\n"
+                        f"Engine: *{engine_ver}*\n"
+                        f"Action: *{review_action}*\n"
+                        "Outcome: `no_trade`\n"
+                        f"Symbol: `{candidate.symbol if candidate is not None else 'n/a'}`\n"
+                        f"Direction: `{candidate.direction if candidate is not None else 'n/a'}`\n"
+                        f"Cycle ID: `{cycle_id}`\n"
+                        f"Run ID: `{run_id}`\n"
+                        f"Thread ID: `{thread_id}`"
                     ),
                 )
             return TradeOracleCycleResult(
@@ -1159,22 +1410,28 @@ class TradeOracleSingleRuntimeDaemon:
                 thread_id=thread_id,
                 outcome="risk_rejected",
                 candidate=candidate,
-                summary={"review_action": review_action},
+                summary={
+                    "review_action": review_action,
+                    "scanner_rows": [evaluation.raw_setup] if evaluation.raw_setup else [],
+                    "account_state": account_state.model_dump(),
+                },
             )
             if self.telegram_client is not None and telegram_chat_id and telegram_message_id:
                 await self.telegram_client.edit_review_message(
                     chat_id=telegram_chat_id,
                     message_id=telegram_message_id,
                     text=(
-                        "TRADE_ORACLE review resolved\n"
-                        f"Action: {review_action}\n"
-                        "Outcome: risk_rejected\n"
-                        f"Symbol: {candidate.symbol}\n"
-                        f"Direction: {candidate.direction}\n"
-                        f"Cycle: {cycle_id}\n"
-                        f"Run: {run_id}\n"
-                        f"Thread: {thread_id}\n"
-                        "Transmitted: False"
+                        "✅ *TRADE_ORACLE Review Resolved*\n"
+                        "----------------------------------------\n"
+                        f"Engine: *{engine_ver}*\n"
+                        f"Action: *{review_action}*\n"
+                        "Outcome: `risk_rejected`\n"
+                        f"Symbol: `{candidate.symbol}`\n"
+                        f"Direction: `{candidate.direction}`\n"
+                        f"Cycle ID: `{cycle_id}`\n"
+                        f"Run ID: `{run_id}`\n"
+                        f"Thread ID: `{thread_id}`\n"
+                        "Transmitted: `False`"
                     ),
                 )
             return TradeOracleCycleResult(
@@ -1208,22 +1465,29 @@ class TradeOracleSingleRuntimeDaemon:
             outcome=cycle_outcome,
             candidate=candidate,
             transmitted=transmitted,
-            summary={"review_action": review_action, "position_sizing": position_sizing},
+            summary={
+                "review_action": review_action,
+                "position_sizing": position_sizing,
+                "scanner_rows": [evaluation.raw_setup] if evaluation.raw_setup else [],
+                "account_state": account_state.model_dump(),
+            },
         )
         if self.telegram_client is not None and telegram_chat_id and telegram_message_id:
             await self.telegram_client.edit_review_message(
                 chat_id=telegram_chat_id,
                 message_id=telegram_message_id,
                 text=(
-                    "TRADE_ORACLE review resolved\n"
-                    f"Action: {review_action}\n"
-                    f"Outcome: {cycle_outcome}\n"
-                    f"Symbol: {candidate.symbol}\n"
-                    f"Direction: {candidate.direction}\n"
-                    f"Cycle: {cycle_id}\n"
-                    f"Run: {run_id}\n"
-                    f"Thread: {thread_id}\n"
-                    f"Transmitted: {str(bool(transmitted))}"
+                    "✅ *TRADE_ORACLE Review Resolved*\n"
+                    "----------------------------------------\n"
+                    f"Engine: *{engine_ver}*\n"
+                    f"Action: *{review_action}*\n"
+                    f"Outcome: `{cycle_outcome}`\n"
+                    f"Symbol: `{candidate.symbol}`\n"
+                    f"Direction: `{candidate.direction}`\n"
+                    f"Cycle ID: `{cycle_id}`\n"
+                    f"Run ID: `{run_id}`\n"
+                    f"Thread ID: `{thread_id}`\n"
+                    f"Transmitted: `{transmitted}`"
                 ),
             )
         return TradeOracleCycleResult(

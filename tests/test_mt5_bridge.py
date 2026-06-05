@@ -322,3 +322,63 @@ def test_mt5_bridge_rejects_invalid_buy_levels_before_order_send(monkeypatch):
         is False
     )
     assert fake_module.request is None
+
+
+def test_mt5_bridge_floors_volume_when_below_minimum_but_low_risk(monkeypatch):
+    fake_module = _FakeMT5OrderModule()
+    monkeypatch.setattr("execution.mt5_bridge._mt5", fake_module)
+    monkeypatch.setattr("config.settings.RISK_AMOUNT_USD", 10.00)
+
+    bridge = MetaTraderBridge(
+        login=1513212902,
+        password="secret",
+        server="FTMO-Demo",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        symbol_map={"AVAX/USDT": "AVAUSD"},
+    )
+
+    # 5.55556 units with entry=9.46, sl=8.83 resolves to raw volume 0.00555 (below minimum volume 0.01)
+    # Resulting risk = 0.01 * 1000 * abs(9.46 - 8.83) = $6.30 (within $20.00 max risk)
+    assert (
+        bridge._transmit_limit_order_sync(
+            "AVAX/USDT",
+            "BUY",
+            5.55556,
+            9.46,
+            8.83,
+            10.30,
+            "units",
+        )
+        is True
+    )
+    assert fake_module.request["volume"] == 0.01
+
+
+def test_mt5_bridge_rejects_floored_volume_when_risk_exceeds_max(monkeypatch):
+    fake_module = _FakeMT5OrderModule()
+    monkeypatch.setattr("execution.mt5_bridge._mt5", fake_module)
+    monkeypatch.setattr("config.settings.RISK_AMOUNT_USD", 10.00)
+
+    bridge = MetaTraderBridge(
+        login=1513212902,
+        password="secret",
+        server="FTMO-Demo",
+        terminal_path=r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        symbol_map={"AVAX/USDT": "AVAUSD"},
+    )
+
+    # 5.55556 units with entry=9.46, sl=7.00 resolves to raw volume 0.00555
+    # Resulting risk = 0.01 * 1000 * abs(9.46 - 7.00) = $24.60 (exceeds $20.00 max risk)
+    assert (
+        bridge._transmit_limit_order_sync(
+            "AVAX/USDT",
+            "BUY",
+            5.55556,
+            9.46,
+            7.00,
+            10.30,
+            "units",
+        )
+        is False
+    )
+    assert fake_module.request is None

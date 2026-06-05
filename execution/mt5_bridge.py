@@ -214,6 +214,9 @@ class MetaTraderBridge:
         requested_size: float,
         symbol_info: Any,
         size_mode: str,
+        limit_price: float | None = None,
+        stop_loss: float | None = None,
+        max_risk_usd: float | None = None,
     ) -> float | None:
         volume_min = float(getattr(symbol_info, "volume_min", 0.0) or 0.0)
         volume_max = float(getattr(symbol_info, "volume_max", 0.0) or 0.0)
@@ -238,14 +241,45 @@ class MetaTraderBridge:
             resolved_volume = self._round_volume_down(resolved_volume, volume_step or 0.01)
 
             if resolved_volume < volume_min:
-                self.logger.error(
-                    "Requested %s unit(s) for %s resolves to broker volume %.8f, below broker minimum %.8f.",
-                    requested_size,
-                    resolved_symbol,
-                    resolved_volume,
-                    volume_min,
-                )
-                return None
+                if limit_price is not None and stop_loss is not None:
+                    sl_dist = abs(float(limit_price) - float(stop_loss))
+                    floored_risk = volume_min * contract_size * sl_dist
+                    resolved_max_risk = max_risk_usd if max_risk_usd is not None else float(settings.RISK_AMOUNT_USD) * 2.0
+                    if floored_risk <= resolved_max_risk:
+                        self.logger.warning(
+                            "Requested %s unit(s) for %s resolves to broker volume %.8f, below minimum %.8f. "
+                            "Flooring to minimum volume %.8f as the resulting risk of $%.2f is within the safety limit of $%.2f.",
+                            requested_size,
+                            resolved_symbol,
+                            resolved_volume,
+                            volume_min,
+                            volume_min,
+                            floored_risk,
+                            resolved_max_risk,
+                        )
+                        resolved_volume = volume_min
+                    else:
+                        self.logger.error(
+                            "Requested %s unit(s) for %s resolves to broker volume %.8f, below minimum %.8f. "
+                            "Floored risk of $%.2f exceeds the safety limit of $%.2f. Rejecting trade.",
+                            requested_size,
+                            resolved_symbol,
+                            resolved_volume,
+                            volume_min,
+                            floored_risk,
+                            resolved_max_risk,
+                        )
+                        return None
+                else:
+                    self.logger.error(
+                        "Requested %s unit(s) for %s resolves to broker volume %.8f, below broker minimum %.8f. "
+                        "No pricing context provided for risk evaluation; rejecting trade.",
+                        requested_size,
+                        resolved_symbol,
+                        resolved_volume,
+                        volume_min,
+                    )
+                    return None
 
         if volume_step > 0.0:
             resolved_volume = round(resolved_volume, 8)
@@ -480,6 +514,8 @@ class MetaTraderBridge:
             requested_size=float(size),
             symbol_info=symbol_info,
             size_mode=size_mode,
+            limit_price=float(limit_price),
+            stop_loss=float(stop_loss),
         )
         if resolved_volume is None:
             return False

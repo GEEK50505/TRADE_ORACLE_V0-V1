@@ -36,7 +36,7 @@ INITIAL_BALANCE = 5000.0
 
 # Strategic Risk Pivot: Hardcoded to exactly $10.00 to maximize drawdown survival.
 # Mathematically permits 15 consecutive losses before the $150 trailing limit is breached.
-RISK_AMOUNT_USD = 10.00 
+RISK_AMOUNT_USD = float(os.getenv("TRADE_ORACLE_RISK_AMOUNT_USD", "20.00")) 
 
 # Institutional Limits & Mathematical Boundaries
 MAX_FLOATING_LOSS_PCT = 0.01        # 1% max intraday drawdown limit ($50 absolute cap)
